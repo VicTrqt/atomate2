@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from jobflow import Flow, Response, job
-from pymatgen.core import Structure
 from pymatgen.io.lobster import Lobsterin
 
 from atomate2.common.files import delete_files
@@ -16,15 +14,15 @@ from atomate2.lobster.jobs import LobsterMaker
 from atomate2.utils.path import strip_hostname
 from atomate2.vasp.jobs.base import BaseVaspMaker
 from atomate2.vasp.powerups import update_user_incar_settings
-from atomate2.vasp.sets.base import VaspInputGenerator
 from atomate2.vasp.sets.core import StaticSetGenerator
 
-__all__ = [
-    "LobsterStaticMaker",
-    "get_basis_infos",
-    "get_lobster_jobs",
-    "delete_lobster_wavecar",
-]
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from pymatgen.core import Structure
+
+    from atomate2.vasp.sets.base import VaspInputGenerator
+
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +81,7 @@ def get_basis_infos(
     vasp_maker: BaseVaspMaker,
     address_max_basis: str = None,
     address_min_basis: str = None,
-):
+) -> dict:
     """
     Compute all relevant basis sets and maximum number of bands.
 
@@ -124,7 +122,7 @@ def get_basis_infos(
 
     nband_list = []
     for dict_for_basis in list_basis_dict:
-        basis = [key + " " + value for key, value in dict_for_basis.items()]
+        basis = [f"{key} {value}" for key, value in dict_for_basis.items()]
         lobsterin = Lobsterin(settingsdict={"basisfunctions": basis})
         nbands = lobsterin._get_nbands(structure=structure)
         nband_list.append(nbands)
@@ -137,8 +135,8 @@ def update_user_incar_settings_maker(
     vasp_maker: BaseVaspMaker,
     nbands: int,
     structure: Structure,
-    prev_vasp_dir: Path | str,
-):
+    prev_dir: Path | str,
+) -> Response:
     """
     Update the INCAR settings of a maker.
 
@@ -151,7 +149,7 @@ def update_user_incar_settings_maker(
         integer indicating the correct number of bands
     structure : .Structure
         Structure object.
-    prev_vasp_dir : Path or str
+    prev_dir : Path or str
         Path or string to vasp files.
 
     Returns
@@ -160,7 +158,7 @@ def update_user_incar_settings_maker(
         LobsterStaticMaker with correct number of bands.
     """
     vasp_maker = update_user_incar_settings(vasp_maker, {"NBANDS": nbands})
-    vasp_job = vasp_maker.make(structure=structure, prev_vasp_dir=prev_vasp_dir)
+    vasp_job = vasp_maker.make(structure=structure, prev_dir=prev_dir)
     return Response(replace=vasp_job)
 
 
@@ -172,7 +170,7 @@ def get_lobster_jobs(
     optimization_uuid: str,
     static_dir: Path | str,
     static_uuid: str,
-):
+) -> Response:
     """
     Create a list of Lobster jobs with different basis sets.
 
@@ -226,7 +224,7 @@ def get_lobster_jobs(
 def delete_lobster_wavecar(
     dirs: list[Path | str],
     lobster_static_dir: Path | str = None,
-):
+) -> None:
     """
     Delete all WAVECARs.
 

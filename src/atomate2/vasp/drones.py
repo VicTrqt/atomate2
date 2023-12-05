@@ -11,8 +11,6 @@ from pymatgen.apps.borg.hive import AbstractDrone
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["VaspDrone"]
-
 
 class VaspDrone(AbstractDrone):
     """
@@ -24,7 +22,7 @@ class VaspDrone(AbstractDrone):
         Additional keyword args passed to :obj:`.TaskDoc.from_directory`.
     """
 
-    def __init__(self, **task_document_kwargs):
+    def __init__(self, **task_document_kwargs) -> None:
         self.task_document_kwargs = task_document_kwargs
 
     def assimilate(self, path: str | Path | None = None) -> TaskDoc:
@@ -81,7 +79,7 @@ class VaspDrone(AbstractDrone):
         if set(task_names).intersection(subdirs):
             return [parent]
         if (
-            not any([parent.endswith(os.sep + r) for r in task_names])
+            not any(parent.endswith(os.sep + r) for r in task_names)
             and len(list(Path(parent).glob("vasprun.xml*"))) > 0
         ):
             return [parent]

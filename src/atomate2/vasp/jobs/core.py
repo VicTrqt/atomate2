@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from custodian.vasp.handlers import (
     FrozenJobErrorHandler,
@@ -17,11 +17,9 @@ from custodian.vasp.handlers import (
 )
 from pymatgen.alchemy.materials import TransformedStructure
 from pymatgen.alchemy.transmuters import StandardTransmuter
-from pymatgen.core.structure import Structure
 
 from atomate2.common.utils import get_transformations
 from atomate2.vasp.jobs.base import BaseVaspMaker, vasp_job
-from atomate2.vasp.sets.base import VaspInputGenerator
 from atomate2.vasp.sets.core import (
     HSEBSSetGenerator,
     HSERelaxSetGenerator,
@@ -34,21 +32,16 @@ from atomate2.vasp.sets.core import (
     TightRelaxSetGenerator,
 )
 
-logger = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from pathlib import Path
 
-__all__ = [
-    "StaticMaker",
-    "RelaxMaker",
-    "NonSCFMaker",
-    "DielectricMaker",
-    "HSEBSMaker",
-    "HSERelaxMaker",
-    "HSEStaticMaker",
-    "TightRelaxMaker",
-    "HSETightRelaxMaker",
-    "TransmuterMaker",
-    "MDMaker",
-]
+    from jobflow import Response
+    from pymatgen.core.structure import Structure
+
+    from atomate2.vasp.sets.base import VaspInputGenerator
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -188,9 +181,9 @@ class NonSCFMaker(BaseVaspMaker):
     def make(
         self,
         structure: Structure,
-        prev_vasp_dir: str | Path | None,
+        prev_dir: str | Path | None,
         mode: str = "uniform",
-    ):
+    ) -> Response:
         """
         Run a non-scf VASP job.
 
@@ -198,7 +191,7 @@ class NonSCFMaker(BaseVaspMaker):
         ----------
         structure : .Structure
             A pymatgen structure object.
-        prev_vasp_dir : str or Path or None
+        prev_dir : str or Path or None
             A previous VASP calculation directory to copy output files from.
         mode : str
             Type of band structure calculation. Options are:
@@ -207,18 +200,13 @@ class NonSCFMaker(BaseVaspMaker):
         """
         self.input_set_generator.mode = mode
 
-        if "parse_dos" not in self.task_document_kwargs:
-            # parse DOS only for uniform band structure
-            self.task_document_kwargs["parse_dos"] = mode == "uniform"
-
-        if "parse_bandstructure" not in self.task_document_kwargs:
-            self.task_document_kwargs["parse_bandstructure"] = mode
-
+        # parse DOS only for uniform band structure
+        self.task_document_kwargs.setdefault("parse_dos", mode == "uniform")
+        self.task_document_kwargs.setdefault("parse_bandstructure", mode)
         # copy previous inputs
-        if "additional_vasp_files" not in self.copy_vasp_kwargs:
-            self.copy_vasp_kwargs["additional_vasp_files"] = ("CHGCAR",)
+        self.copy_vasp_kwargs.setdefault("additional_vasp_files", ("CHGCAR",))
 
-        return super().make.original(self, structure, prev_vasp_dir)
+        return super().make.original(self, structure, prev_dir)
 
 
 @dataclass
@@ -367,9 +355,9 @@ class HSEBSMaker(BaseVaspMaker):
     def make(
         self,
         structure: Structure,
-        prev_vasp_dir: str | Path | None = None,
+        prev_dir: str | Path | None = None,
         mode="uniform",
-    ):
+    ) -> Response:
         """
         Run a HSE06 band structure VASP job.
 
@@ -377,7 +365,7 @@ class HSEBSMaker(BaseVaspMaker):
         ----------
         structure : .Structure
             A pymatgen structure object.
-        prev_vasp_dir : str or Path or None
+        prev_dir : str or Path or None
             A previous VASP calculation directory to copy output files from.
         mode : str
             Type of band structure calculation. Options are:
@@ -387,7 +375,7 @@ class HSEBSMaker(BaseVaspMaker):
         """
         self.input_set_generator.mode = mode
 
-        if mode == "gap" and prev_vasp_dir is None:
+        if mode == "gap" and prev_dir is None:
             logger.warning(
                 "HSE band structure in 'gap' mode requires a previous VASP calculation "
                 "directory from which to extract the VBM and CBM k-points. This "
@@ -395,22 +383,17 @@ class HSEBSMaker(BaseVaspMaker):
             )
             mode = "uniform"
 
-        if "parse_dos" not in self.task_document_kwargs:
-            # parse DOS only for uniform band structure
-            self.task_document_kwargs["parse_dos"] = "uniform" in mode
+        # parse DOS only for uniform band structure
+        self.task_document_kwargs.setdefault("parse_dos", "uniform" in mode)
 
-        if "parse_bandstructure" not in self.task_document_kwargs:
-            parse_bandstructure = "uniform" if mode == "gap" else mode
-            self.task_document_kwargs["parse_bandstructure"] = parse_bandstructure
+        parse_bandstructure = "uniform" if mode == "gap" else mode
+        self.task_document_kwargs.setdefault("parse_bandstructure", parse_bandstructure)
 
         # copy previous inputs
-        if (
-            prev_vasp_dir is not None
-            and "additional_vasp_files" not in self.copy_vasp_kwargs
-        ):
-            self.copy_vasp_kwargs["additional_vasp_files"] = ("CHGCAR",)
+        if prev_dir is not None:
+            self.copy_vasp_kwargs.setdefault("additional_vasp_files", ("CHGCAR",))
 
-        return super().make.original(self, structure, prev_vasp_dir)
+        return super().make.original(self, structure, prev_dir)
 
 
 @dataclass
@@ -504,8 +487,8 @@ class TransmuterMaker(BaseVaspMaker):
     def make(
         self,
         structure: Structure,
-        prev_vasp_dir: str | Path | None = None,
-    ):
+        prev_dir: str | Path | None = None,
+    ) -> Response:
         """
         Run a transmuter VASP job.
 
@@ -513,7 +496,7 @@ class TransmuterMaker(BaseVaspMaker):
         ----------
         structure : Structure
             A pymatgen structure object.
-        prev_vasp_dir : str or Path or None
+        prev_dir : str or Path or None
             A previous VASP calculation directory to copy output files from.
         """
         transformations = get_transformations(
@@ -523,12 +506,11 @@ class TransmuterMaker(BaseVaspMaker):
         transmuter = StandardTransmuter([ts], transformations)
         structure = transmuter.transformed_structures[-1].final_structure
 
-        # to avoid mongoDB errors, ":" is automatically converted to "."
-        if "transformations:json" not in self.write_additional_data:
-            tjson = transmuter.transformed_structures[-1]
-            self.write_additional_data["transformations:json"] = tjson
+        # to avoid MongoDB errors, ":" is automatically converted to "."
+        tjson = transmuter.transformed_structures[-1]
+        self.write_additional_data.setdefault("transformations:json", tjson)
 
-        return super().make.original(self, structure, prev_vasp_dir)
+        return super().make.original(self, structure, prev_dir)
 
 
 @dataclass

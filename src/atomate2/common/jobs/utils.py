@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from jobflow import Response, job
-from pymatgen.core import Structure
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 
 from atomate2 import SETTINGS
 
-__all__ = [
-    "structure_to_primitive",
-    "structure_to_conventional",
-    "retrieve_structure_from_materials_project",
-]
+if TYPE_CHECKING:
+    from pymatgen.core import Structure
 
 
 @job
@@ -32,7 +30,6 @@ def structure_to_primitive(
     Returns
     -------
     .Structure
-
     """
     sga = SpacegroupAnalyzer(structure, symprec=symprec)
     return sga.get_primitive_standard_structure()
@@ -55,7 +52,6 @@ def structure_to_conventional(
     Returns
     -------
     .Structure
-
     """
     sga = SpacegroupAnalyzer(structure, symprec=symprec)
     return sga.get_conventional_standard_structure()
