@@ -19,6 +19,7 @@ def copy_files(
     prefix: str = "",
     allow_missing: bool = False,
     file_client: FileClient | None = None,
+    link_files: bool = False,
 ) -> None:
     r"""
     Copy files between source and destination folders.
