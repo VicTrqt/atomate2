@@ -22,6 +22,7 @@ from atomate2.abinit.schemas.core import AbinitTaskDocument, Status
 from atomate2.abinit.sets.base import AbinitInputGenerator
 from atomate2.abinit.utils.common import UnconvergedError
 from atomate2.abinit.utils.history import JobHistory
+from atomate2.abinit.utils.settings import get_abipy_manager
 
 logger = logging.getLogger(__name__)
 
