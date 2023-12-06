@@ -110,9 +110,9 @@ def setup_job(
     # Load the atomate settings for abinit to get configuration parameters
     # TODO: how to allow for tuned parameters on a per-job basis ?
     #  (similar to fw_spec-passed settings)
-    abipy_manager = None  # Currently disabled as it is needed for autoparal,
+    #abipy_manager = None  # Currently disabled as it is needed for autoparal,
     # which is not yet supported
-    # abipy_manager = get_abipy_manager(SETTINGS)
+    abipy_manager = get_abipy_manager(SETTINGS)
 
     # set walltime, if possible
     # TODO: see in set_walltime, where to put this walltime_command
