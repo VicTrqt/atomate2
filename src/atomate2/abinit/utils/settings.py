@@ -11,6 +11,6 @@ def get_abipy_manager(settings):
     settings
         Abinit atomate2 settings.
     """
-    if settings.ABINIT_ABIPY_MANAGER_FILE: #VT
-        return TaskManager.from_file(settings.ABINIT_ABIPY_MANAGER_FILE) #VT
+    if settings.ABINIT_ABIPY_MANAGER_FILE:
+        return TaskManager.from_file(settings.ABINIT_ABIPY_MANAGER_FILE)
     return TaskManager.from_user_config()
