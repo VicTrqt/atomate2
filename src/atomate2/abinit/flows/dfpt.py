@@ -30,6 +30,8 @@ from atomate2.abinit.powerups import (
     update_user_abinit_settings,
     update_user_kpoints_settings
 )
+from abipy.abio.factories import scf_for_phonons
+from atomate2.abinit.sets.core import StaticSetGenerator
 
 
 @dataclass
@@ -70,7 +72,7 @@ class DfptFlowMaker(Maker):
     """
 
     name: str = "DFPT"
-    static_maker: BaseAbinitMaker = field(default_factory=StaticMaker)
+    static_maker: BaseAbinitMaker = field(default_factory=lambda: StaticMaker(input_set_generator=StaticSetGenerator(factory=scf_for_phonons)))
     ddk_maker: BaseAbinitMaker | None = field(default_factory=DdkMaker)  # |
     dde_maker: BaseAbinitMaker | None = field(
         default_factory=DdeMaker
@@ -106,12 +108,15 @@ class DfptFlowMaker(Maker):
         static_job = self.static_maker.make(structure, restart_from=restart_from)
         #To avoid metallic case=occopt=3 which is not okay wrt. DFPT and occopt 1 with spin polarization requires spinmagntarget
         static_job = update_factory_kwargs(         static_job, {'smearing': 'nosmearing', 'spin_mode': 'unpolarized'})
+        #static_job = update_factory_kwargs(         static_job, {"kppa": 1000}) #VT to remove (for testing only)
         static_job = update_user_kpoints_settings(  static_job, {"grid_density": 3000})
         static_job = update_user_abinit_settings(   static_job, {   'nstep': 500,
                                                                     'toldfe': 1e-22,
+                                                                    #'toldfe': 1e-06, #VT to remove (for testing only)
                                                                     'autoparal': 1,
                                                                     'npfft': 1,
-                                                                    'chksymbreak': '0'})
+                                                                })
+                                                                    #'chksymbreak': '0'})
         jobs = [static_job]
 
         if self.ddk_maker:

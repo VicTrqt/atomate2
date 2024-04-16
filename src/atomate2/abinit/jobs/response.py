@@ -362,7 +362,8 @@ def run_dde_rf(
             #structure=structure,
         )
         dde_job.append_name(f"{ipert+1}/{len(perturbations)}")
-        dde_job = update_user_abinit_settings(dde_job, {'irdddk': 1, 'ird1wf': 0})#, 'tolvrs': 1e-8}) #VT TO REMOVE TOLVRS ONLY FOR TESTING
+        dde_job = update_user_abinit_settings(dde_job, {'irdddk': 1, 'ird1wf': 0})
+        #dde_job = update_user_abinit_settings(dde_job, {'irdddk': 1, 'ird1wf': 0, 'tolvrs': 1e-8}) #VT TO REMOVE TOLVRS ONLY FOR TESTING
 
         dde_jobs.append(dde_job)
         outputs["dirs"].append(dde_job.output.dir_name)  # TODO: determine outputs
