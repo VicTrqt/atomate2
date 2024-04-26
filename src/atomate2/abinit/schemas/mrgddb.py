@@ -10,7 +10,7 @@ from pathlib import Path
 # from typing import Type, TypeVar, Union, Optional, List
 from typing import Any, Optional, Union
 
-from abipy.dfpt.ddb import DdbFile
+from abipy.dfpt.ddb import DdbFile, AnaddbError
 from abipy.flowtk import events
 from abipy.flowtk.utils import File
 from emmet.core.structure import StructureMetadata
@@ -65,7 +65,10 @@ class CalculationOutput(BaseModel):
         The Mrgddb calculation output document.
         """
         structure = output.structure
-        dijk = list(output.anaget_nlo(voigt=False, units="pm/V"))
+        try:
+            dijk = list(output.anaget_nlo(voigt=False, units="pm/V"))
+        except AnaddbError:
+            dijk = None
         epsinf = list(output.anaget_epsinf_and_becs()[0])
 
         return cls(

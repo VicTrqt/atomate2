@@ -175,7 +175,10 @@ class DfptFlowMaker(Maker):
         if self.mrgddb_maker:
             # merge the DDE and DTE DDB.
 
-            prev_outputs = [dde_calcs.output["dirs"], dte_calcs.output["dirs"]]
+            if self.dte_maker:
+                prev_outputs = [dde_calcs.output["dirs"], dte_calcs.output["dirs"]]
+            else:
+                prev_outputs = [dde_calcs.output["dirs"]]
 
             mrgddb_job = self.mrgddb_maker.make(
                 prev_outputs=prev_outputs,
@@ -212,4 +215,25 @@ class DfptFlowMaker(Maker):
             dte_skip_permutations=False,
             dte_phonon_pert=False,
             dte_ixc=None,  # TODO: enforce LDA or not ?
+        )
+
+    @classmethod
+    def epsinf(cls) -> Flow:
+        """Static dielectric tensor (electronic contribution).
+
+        Create a DFPT flow to compute the static dielectric tensor
+    (also called electronic or ion-clamped or high-frequency contribution).
+
+        """
+        ddk_maker = DdkMaker()
+        dde_maker = DdeMaker()
+        mrgddb_maker = MrgddbMaker()
+        return cls(
+            name="Chi2 SHG",
+            ddk_maker=ddk_maker,
+            dde_maker=dde_maker,
+            dte_maker=None,
+            mrgddb_maker=mrgddb_maker,
+            use_ddk_sym=False,
+            use_dde_sym=False,
         )
