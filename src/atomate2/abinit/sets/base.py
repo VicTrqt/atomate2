@@ -47,6 +47,134 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class AbiBroadInputGenerator(InputGenerator):
+    """
+    A class to generate input sets for Abinit and related utilities.
+
+    Parameters
+    ----------
+    calc_type
+        A short description of the calculation type
+    prev_outputs_deps
+        Defines the files that needs to be linked from previous calculations and
+        are required for the execution of the current calculation.
+        The format is a tuple where each element is a list of  "|" separated
+        runlevels (as defined in the AbinitInput object) followed by a colon and
+        a list of "|" list of extensions of files that needs to be linked.
+        The runlevel defines the type of calculations from which the file can
+        be linked. An example is (f"{NSCF}:WFK",).
+    """
+
+    calc_type: str
+    prev_outputs_deps: str | tuple | None
+
+    def check_format_prev_dirs(
+        self, prev_dirs: str | tuple | list | Path | None
+    ) -> list[str] | None:
+        """Check and format the prev_dirs (restart or dependency)."""
+        if prev_dirs is None:
+            return None
+        if isinstance(prev_dirs, (str, Path)):
+            return [str(prev_dirs)]
+        return [str(prev_dir) for prev_dir in prev_dirs]
+
+    def resolve_deps(
+        self, prev_dirs: list[str], deps: str | tuple, check_runlevel: bool = True
+    ) -> tuple[dict, list]:
+        """Resolve dependencies.
+
+        This method assumes that prev_dirs is in the correct format, i.e.
+        a list of directories as str or Path.
+        """
+        input_files = []
+        deps_irdvars = {}
+        for prev_dir in prev_dirs:
+            if check_runlevel:
+                abinit_input = load_abinit_input(prev_dir)
+            for dep in deps:
+                runlevel = set(dep.split(":")[0].split("|"))
+                exts = list(dep.split(":")[1].split("|"))
+                if not check_runlevel or runlevel.intersection(abinit_input.runlevel):
+                    irdvars, inp_files = self.resolve_dep_exts(
+                        prev_dir=prev_dir, exts=exts
+                    )
+                    input_files.extend(inp_files)
+                    deps_irdvars.update(irdvars)
+
+        return deps_irdvars, input_files
+
+    @staticmethod
+    def _get_in_file_name(out_filepath: str) -> str:
+        in_file = os.path.basename(out_filepath)
+        in_file = in_file.replace(OUTDATAFILE_PREFIX, INDATAFILE_PREFIX, 1)
+
+        return os.path.basename(in_file).replace("WFQ", "WFK", 1)
+
+    @staticmethod
+    def resolve_dep_exts(prev_dir: str, exts: list[str]) -> tuple:
+        """Return irdvars and corresponding file for a given dependency.
+
+        This method assumes that prev_dir is in the correct format,
+        i.e. a directory as a str or Path.
+        """
+        prev_outdir = Directory(os.path.join(prev_dir, OUTDIR_NAME))
+        inp_files = []
+
+        for ext in exts:
+            # TODO: how to check that we have the files we need ?
+            #  Should we raise if don't find at least one file for a given extension ?
+            if ext in ("1WF", "1DEN"):
+                # Special treatment for 1WF and 1DEN files
+                if ext == "1WF":
+                    files = prev_outdir.find_1wf_files()
+                elif ext == "1DEN":
+                    files = prev_outdir.find_1den_files()
+                else:
+                    raise RuntimeError("Should not occur.")
+                if files is not None:
+                    inp_files = [
+                        (f.path, AbiBroadInputGenerator._get_in_file_name(f.path))
+                        for f in files
+                    ]
+                    irdvars = irdvars_for_ext(ext)
+                    break
+            elif ext == "DEN":
+                # Special treatment for DEN files
+                # In case of relaxations or MD, there may be several TIM?_DEN files
+                # First look for the standard out_DEN file.
+                # If not found, look for the last TIM?_DEN file.
+                out_den = prev_outdir.path_in(f"{OUTDATAFILE_PREFIX}_DEN")
+                if os.path.exists(out_den):
+                    irdvars = irdvars_for_ext("DEN")
+                    inp_files.append(
+                        (out_den, AbiBroadInputGenerator._get_in_file_name(out_den))
+                    )
+                    break
+                last_timden = prev_outdir.find_last_timden_file()
+                if last_timden is not None:
+                    if last_timden.path.endswith(".nc"):
+                        in_file_name = f"{INDATAFILE_PREFIX}_DEN.nc"
+                    else:
+                        in_file_name = f"{INDATAFILE_PREFIX}_DEN"
+                    inp_files.append((last_timden.path, in_file_name))
+                    irdvars = irdvars_for_ext("DEN")
+                    break
+            else:
+                out_file = prev_outdir.has_abiext(ext)
+                irdvars = irdvars_for_ext(ext)
+                if out_file:
+                    inp_files.append(
+                        (out_file, AbiBroadInputGenerator._get_in_file_name(out_file))
+                    )
+                    break
+        else:
+            msg = f"Cannot find {' or '.join(exts)} file to restart from."
+            logger.error(msg)
+            raise InitializationError(msg)
+        return irdvars, inp_files
+
+
 class AbinitInputSet(InputSet):
     """
     A class to represent a set of Abinit inputs.
@@ -119,6 +247,14 @@ class AbinitInputSet(InputSet):
             ext = fname2ext(in_file)
             if ext is None:
                 return False
+            # Need to consider irdddk to read 1WF files
+            # VT
+            if ext == "1WF" and (
+                "ird1wf" in self.abinit_input or "irdddk" in self.abinit_input
+            ):
+                return (
+                    self.abinit_input["ird1wf"] == 1 or self.abinit_input["irdddk"] == 1
+                )  # VT
             irdvars = irdvars_for_ext(ext)
             for irdvar, irdval in irdvars.items():
                 if irdvar not in self.abinit_input:
@@ -239,7 +375,7 @@ def as_pseudo_table(pseudos: str | Sequence[Pseudo]) -> PseudoTable:
 
 
 @dataclass
-class AbinitInputGenerator(InputGenerator):
+class AbinitInputGenerator(AbiBroadInputGenerator):
     """
     A class to generate Abinit input sets.
 
@@ -296,7 +432,7 @@ class AbinitInputGenerator(InputGenerator):
         Tolerance for symmetry finding, used for line mode band structure k-points.
     """
 
-    factory: Callable
+    factory: Callable | None = None
     calc_type: str = "abinit_calculation"
     pseudos: str | list[str] | PseudoTable | None = "ONCVPSP-PBE-SR-PDv0.4:standard"
     factory_kwargs: dict = field(default_factory=dict)
@@ -356,7 +492,7 @@ class AbinitInputGenerator(InputGenerator):
         else:
             if prev_outputs is not None and not self.prev_outputs_deps:
                 raise RuntimeError(
-                    f"Previous outputs not allowed for {self.__class__.__name__}."
+                    f"Previous outputs not allowed for {type(self).__name__}."
                 )
             abinit_input = self.get_abinit_input(
                 structure=structure,
@@ -387,41 +523,6 @@ class AbinitInputGenerator(InputGenerator):
             input_files=input_files,
             link_files=True,
         )
-
-    def check_format_prev_dirs(
-        self, prev_dirs: str | tuple | list | Path | None
-    ) -> list[str] | None:
-        """Check and format the prev_dirs (restart or dependency)."""
-        if prev_dirs is None:
-            return None
-        if isinstance(prev_dirs, (str, Path)):
-            return [str(prev_dirs)]
-        return [str(prev_dir) for prev_dir in prev_dirs]
-
-    def resolve_deps(
-        self, prev_dirs: list[str], deps: str | tuple, check_runlevel: bool = True
-    ) -> tuple[dict, list]:
-        """Resolve dependencies.
-
-        This method assumes that prev_dirs is in the correct format, i.e.
-        a list of directories as str or Path.
-        """
-        input_files = []
-        deps_irdvars = {}
-        for prev_dir in prev_dirs:
-            if check_runlevel:
-                abinit_input = load_abinit_input(prev_dir)
-            for dep in deps:
-                runlevel = set(dep.split(":")[0].split("|"))
-                exts = list(dep.split(":")[1].split("|"))
-                if not check_runlevel or runlevel.intersection(abinit_input.runlevel):
-                    irdvars, inp_files = self.resolve_dep_exts(
-                        prev_dir=prev_dir, exts=exts
-                    )
-                    input_files.extend(inp_files)
-                    deps_irdvars.update(irdvars)
-
-        return deps_irdvars, input_files
 
     def resolve_prev_inputs(
         self, prev_dirs: list[str], prev_inputs_kwargs: dict
@@ -461,76 +562,6 @@ class AbinitInputGenerator(InputGenerator):
 
         return abinit_inputs
 
-    @staticmethod
-    def _get_in_file_name(out_filepath: str) -> str:
-        in_file = os.path.basename(out_filepath)
-        in_file = in_file.replace(OUTDATAFILE_PREFIX, INDATAFILE_PREFIX, 1)
-
-        return os.path.basename(in_file).replace("WFQ", "WFK", 1)
-
-    @staticmethod
-    def resolve_dep_exts(prev_dir: str, exts: list[str]) -> tuple:
-        """Return irdvars and corresponding file for a given dependency.
-
-        This method assumes that prev_dir is in the correct format,
-        i.e. a directory as a str or Path.
-        """
-        prev_outdir = Directory(os.path.join(prev_dir, OUTDIR_NAME))
-        inp_files = []
-
-        for ext in exts:
-            # TODO: how to check that we have the files we need ?
-            #  Should we raise if don't find at least one file for a given extension ?
-            if ext in ("1WF", "1DEN"):
-                # Special treatment for 1WF and 1DEN files
-                if ext == "1WF":
-                    files = prev_outdir.find_1wf_files()
-                elif ext == "1DEN":
-                    files = prev_outdir.find_1den_files()
-                else:
-                    raise RuntimeError("Should not occur.")
-                if files is not None:
-                    inp_files = [
-                        (f.path, AbinitInputGenerator._get_in_file_name(f.path))
-                        for f in files
-                    ]
-                    irdvars = irdvars_for_ext(ext)
-                    break
-            elif ext == "DEN":
-                # Special treatment for DEN files
-                # In case of relaxations or MD, there may be several TIM?_DEN files
-                # First look for the standard out_DEN file.
-                # If not found, look for the last TIM?_DEN file.
-                out_den = prev_outdir.path_in(f"{OUTDATAFILE_PREFIX}_DEN")
-                if os.path.exists(out_den):
-                    irdvars = irdvars_for_ext("DEN")
-                    inp_files.append(
-                        (out_den, AbinitInputGenerator._get_in_file_name(out_den))
-                    )
-                    break
-                last_timden = prev_outdir.find_last_timden_file()
-                if last_timden is not None:
-                    if last_timden.path.endswith(".nc"):
-                        in_file_name = f"{INDATAFILE_PREFIX}_DEN.nc"
-                    else:
-                        in_file_name = f"{INDATAFILE_PREFIX}_DEN"
-                    inp_files.append((last_timden.path, in_file_name))
-                    irdvars = irdvars_for_ext("DEN")
-                    break
-            else:
-                out_file = prev_outdir.has_abiext(ext)
-                irdvars = irdvars_for_ext(ext)
-                if out_file:
-                    inp_files.append(
-                        (out_file, AbinitInputGenerator._get_in_file_name(out_file))
-                    )
-                    break
-        else:
-            msg = f"Cannot find {' or '.join(exts)} file to restart from."
-            logger.error(msg)
-            raise InitializationError(msg)
-        return irdvars, inp_files
-
     def get_abinit_input(
         self,
         structure: Structure | None = None,
@@ -541,8 +572,7 @@ class AbinitInputGenerator(InputGenerator):
         kpoints_settings: dict | KSampling | None = None,
         input_index: int | None = None,
     ) -> AbinitInput:
-        """
-        Generate the AbinitInput for the input set.
+        """Generate the AbinitInput for the input set.
 
         Uses the defined factory function and additional parameters from user
         and subclasses.
@@ -574,7 +604,7 @@ class AbinitInputGenerator(InputGenerator):
         if self.factory_prev_inputs_kwargs:
             if not prev_outputs:
                 raise RuntimeError(
-                    f"No previous_outputs. Required for {self.__class__.__name__}."
+                    f"No previous_outputs. Required for {type(self).__name__}."
                 )
 
             # TODO consider cases where structure might be defined even if
@@ -589,18 +619,16 @@ class AbinitInputGenerator(InputGenerator):
             )
             total_factory_kwargs.update(abinit_inputs)
 
-        else:
-            # TODO check if this should be removed or the check be improved
-            if structure is None:
-                msg = (
-                    f"Structure is mandatory for {self.__class__.__name__} "
-                    f"generation since no previous output is used."
-                )
-                raise RuntimeError(msg)
+        elif structure is None:
+            msg = (
+                f"Structure is mandatory for {type(self).__name__} "
+                f"generation since no previous output is used."
+            )
+            raise RuntimeError(msg)
 
         if not self.prev_outputs_deps and prev_outputs:
             msg = (
-                f"Previous outputs not allowed for {self.__class__.__name__} "
+                f"Previous outputs not allowed for {type(self).__name__} "
                 "Consider if restart_from argument of get_input_set method "
                 "can fit your needs instead."
             )

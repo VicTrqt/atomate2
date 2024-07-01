@@ -19,11 +19,20 @@ if TYPE_CHECKING:
     from abipy.abio.inputs import AbinitInput
     from pymatgen.core.structure import Structure
 
+    from atomate2.abinit.sets.anaddb import AnaddbInputGenerator
     from atomate2.abinit.sets.base import AbinitInputGenerator
+    from atomate2.abinit.sets.mrgddb import MrgddbInputGenerator
 
+__all__ = [
+    "out_to_in",
+    "fname2ext",
+    "load_abinit_input",
+    "write_abinit_input_set",
+    "write_mrgddb_input_set",
+    "write_anaddb_input_set",
+]
 
 logger = logging.getLogger(__name__)
-
 
 ALL_ABIEXTS = abi_extensions()
 
@@ -37,6 +46,8 @@ def fname2ext(filepath: Path | str) -> None | str:
     if "_" not in filename:
         return None
     ext = filename.split("_")[-1].replace(".nc", "")
+    if "1WF" in ext:  # VT
+        ext = "1WF"  # VT
     if ext not in ALL_ABIEXTS:
         return None
     return ext
@@ -139,3 +150,62 @@ def write_abinit_input_set(
         raise RuntimeError("AbinitInputSet is not valid.")
 
     ais.write_input(directory=directory, make_dir=True, overwrite=False)
+
+
+def write_mrgddb_input_set(
+    input_set_generator: MrgddbInputGenerator,
+    prev_outputs: str | Path | list[str] | None = None,
+    directory: str | Path = ".",
+) -> None:
+    """Write the mrgddb input using a given generator.
+
+    Parameters
+    ----------
+    input_set_generator
+        The input generator used to write the mrgddb inputs.
+    prev_outputs
+        The list of previous directories needed for the calculation.
+    directory
+        Directory in which to write the abinit inputs.
+    """
+    mrgis = input_set_generator.get_input_set(
+        prev_outputs=prev_outputs,
+        workdir=directory,
+    )
+    if not mrgis.validate():
+        raise RuntimeError(
+            "MrgddbInputSet is not valid. Some previous outputs \
+        do not exist."
+        )
+
+    mrgis.write_input(directory=directory, make_dir=True, overwrite=False)
+
+
+def write_anaddb_input_set(
+    structure: Structure,
+    input_set_generator: AnaddbInputGenerator,
+    prev_outputs: str | Path | list[str] | None = None,
+    directory: str | Path = ".",
+) -> None:
+    """Write the anaddb input using a given generator.
+
+    Parameters
+    ----------
+    input_set_generator
+        The input generator used to write the anaddb inputs.
+    prev_outputs
+        The list of previous directories needed for the calculation.
+    directory
+        Directory in which to write the abinit inputs.
+    """
+    anais = input_set_generator.get_input_set(
+        structure=structure,
+        prev_outputs=prev_outputs,
+    )
+    if not anais.validate():
+        raise RuntimeError(
+            "AnaddbInputSet is not valid. Some previous outputs \
+        do not exist."
+        )
+
+    anais.write_input(directory=directory, make_dir=True, overwrite=False)
