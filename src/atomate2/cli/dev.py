@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING, Any
 
 import click
@@ -67,7 +68,9 @@ def vasp_test_data(test_dir: str | Path, additional_file: list[str]) -> None:
 
     outputs = loadfn("outputs.json")
 
-    task_labels = [o["output"].task_label for o in outputs if isinstance(o, TaskDoc)]
+    task_labels = [
+        o.output.task_label for o in outputs if isinstance(o.output, TaskDoc)
+    ]
 
     if len(task_labels) != len(set(task_labels)):
         raise ValueError("Not all jobs have unique names")
@@ -75,13 +78,13 @@ def vasp_test_data(test_dir: str | Path, additional_file: list[str]) -> None:
     original_mapping = {}
     mapping = {}
     for output in outputs:
-        if not isinstance(output["output"], TaskDoc):
+        if not isinstance(output.output, TaskDoc):
             # this is not a VASP job
             continue
 
-        job_name = output["output"].task_label
-        orig_job_dir = strip_hostname(output["output"].dir_name)
-        folder_name = output["output"].task_label.replace("/", "_").replace(" ", "_")
+        job_name = output.output.task_label
+        orig_job_dir = strip_hostname(output.output.dir_name)
+        folder_name = output.output.task_label.replace("/", "_").replace(" ", "_")
 
         if len(task_labels) == 1:
             # only testing a single job
@@ -141,7 +144,7 @@ def vasp_test_data(test_dir: str | Path, additional_file: list[str]) -> None:
         [f"  {v}  ->  {k}" for k, v in original_mapping.items()]
     )
 
-    run_vasp_kwargs = {k: {"incar_settings": ["NSW", "ISMEAR"]} for k in mapping}
+    run_vasp_kwargs = {key: {"incar_settings": ["NSW", "ISMEAR"]} for key in mapping}
     run_vasp_kwargs_str = pformat(run_vasp_kwargs).replace("\n", "\n    ")
 
     test_function_str = f"""Test files generated in test_data.
@@ -221,8 +224,8 @@ def abinit_script_maker() -> None:
         "save_abinit_maker(maker)",
         "",
     ]
-    with open(script_fname, "w") as f:
-        f.write("\n".join(out))
+    with open(script_fname, "w") as file:
+        file.write("\n".join(out))
 
 
 @dev.command(context_settings={"help_option_names": ["-h", "--help"]})
@@ -294,7 +297,9 @@ def abinit_test_data(test_name: str, test_data_dir: str | None, force: bool) -> 
     from monty.serialization import dumpfn, loadfn
     from monty.shutil import compress_dir
 
-    from atomate2.abinit.schemas.core import AbinitTaskDocument
+    from atomate2.abinit.schemas.anaddb import AnaddbTaskDoc
+    from atomate2.abinit.schemas.mrgddb import MrgddbTaskDoc
+    from atomate2.abinit.schemas.task import AbinitTaskDoc
     from atomate2.common.files import copy_files
     from atomate2.utils.path import strip_hostname
 
@@ -323,7 +328,7 @@ def abinit_test_data(test_name: str, test_data_dir: str | None, force: bool) -> 
     maker_info = loadfn("maker.json")
     maker = maker_info["maker"]
 
-    maker_name = maker.__class__.__name__
+    maker_name = type(maker).__name__
     # take the module path and exclude the first two elements
     # (i.e. "atomate2" and "abinit")
     module_path = maker.__module__.split(".")[2:]
@@ -344,7 +349,7 @@ def abinit_test_data(test_name: str, test_data_dir: str | None, force: bool) -> 
     outputs = loadfn("outputs.json")
 
     task_labels = [
-        o["output"].task_label for o in outputs if isinstance(o, AbinitTaskDocument)
+        o["output"].task_label for o in outputs if isinstance(o, AbinitTaskDoc)
     ]
 
     if len(task_labels) != len(set(task_labels)):
@@ -379,9 +384,17 @@ def abinit_test_data(test_name: str, test_data_dir: str | None, force: bool) -> 
                 allow_missing=allow_missing,
             )
         if include_fake_files:
-            for fname in include_fake_files:
+            for fn in include_fake_files:
+                # let's be sure to catch outputs of perturbation tasks
+                fname = check_file_ext_pert(filename=fn, dirname=src_dirdata)
                 src_fpath = src_dirdata / fname
                 dest_fpath = dest_dirdata / fname
+                # let's remove out_DDB that were copied but could be a fake file
+                remove_copied_out_ddb(
+                    filename=fn, dirname=dest_dirdata, src_dirname=src_dirdata
+                )
+                if dest_fpath.exists():
+                    return
                 if not src_fpath.exists():
                     if allow_missing:
                         continue
@@ -394,6 +407,25 @@ def abinit_test_data(test_name: str, test_data_dir: str | None, force: bool) -> 
                     raise RuntimeError(
                         "File is not a symbolic link nor a regular file."
                     )
+
+    # can return out_DENxxx from the filename out_DEN and idem for out_1WFxxx
+    def check_file_ext_pert(filename: str | Path, dirname: str | Path) -> str | Path:
+        for file in os.listdir(dirname):
+            if str(filename) in file:
+                return file
+        return filename
+
+    # remove out_DDB from a given directory if the src out_DDB
+    # was not the output of a mrgddb task
+    def remove_copied_out_ddb(
+        filename: str | Path, dirname: Path, src_dirname: Path
+    ) -> None:
+        if str(filename) != "out_DDB":
+            return
+        path_mrgddb_in = src_dirname.parents[0] / "mrgddb.in"
+        path_out_ddb = dirname / filename
+        if not path_mrgddb_in.exists() and path_out_ddb.exists():
+            os.remove(path_out_ddb)
 
     def _fake_dirs(
         src_dir: Path,
@@ -411,6 +443,7 @@ def abinit_test_data(test_name: str, test_data_dir: str | None, force: bool) -> 
             ("indata", "outdata", "tmpdata"),
             (indata_files, outdata_files, tmpdata_files),
             (indata_fake_files, outdata_fake_files, tmpdata_fake_files),
+            strict=True,
         ):
             _fake_dirdata(
                 src_dir=src_dir,
@@ -423,14 +456,18 @@ def abinit_test_data(test_name: str, test_data_dir: str | None, force: bool) -> 
             )
 
     for output in outputs:
-        if not isinstance(output["output"], AbinitTaskDocument):
+        if (
+            not isinstance(output.output, AbinitTaskDoc)
+            and not isinstance(output.output, MrgddbTaskDoc)
+            and not isinstance(output.output, AnaddbTaskDoc)
+        ):
             # this is not an Abinit job
             continue
 
-        job_name = output["output"].task_label
-        orig_job_dir = Path(strip_hostname(output["output"].dir_name))
-        folder_name = output["output"].task_label.replace("/", "_").replace(" ", "_")
-        index_job = str(output["index"])
+        job_name = output.output.task_label
+        orig_job_dir = Path(strip_hostname(output.output.dir_name))
+        folder_name = output.output.task_label.replace("/", "_").replace(" ", "_")
+        index_job = str(output.index)
 
         job_dir = test_dir / folder_name
         _makedir(job_dir, force_overwrite=force)
@@ -474,9 +511,12 @@ def abinit_test_data(test_name: str, test_data_dir: str | None, force: bool) -> 
             input_dir,
             include_files=[
                 "run.abi",
+                "mrgddb.in",
+                "anaddb.in",
                 "abinit_input.json",
+                "anaddb_input.json",
             ],
-            allow_missing=False,
+            allow_missing=True,
         )
         _fake_dirs(
             src_dir=orig_job_dir,
@@ -484,7 +524,7 @@ def abinit_test_data(test_name: str, test_data_dir: str | None, force: bool) -> 
             indata_files=None,
             outdata_files=None,
             tmpdata_files=None,
-            indata_fake_files=["in_DEN", "in_WFK"],
+            indata_fake_files=["in_DEN", "in_WFK", "in_1WF", "in_DDB"],
             outdata_fake_files=None,
             tmpdata_fake_files=None,
             force_overwrite=force,
@@ -501,16 +541,16 @@ def abinit_test_data(test_name: str, test_data_dir: str | None, force: bool) -> 
                 "run.err",
                 "run.log",
             ],
-            allow_missing=False,
+            allow_missing=True,
         )
         _fake_dirs(
             src_dir=orig_job_dir,
             dest_dir=output_dir,
             indata_files=None,
-            outdata_files=["out_GSR.nc", "out_FATBANDS.nc"],
+            outdata_files=["out_GSR.nc", "out_FATBANDS.nc", "out_DDB", "out_anaddb.nc"],
             tmpdata_files=None,
             indata_fake_files=None,
-            outdata_fake_files=["out_DEN", "out_WFK"],
+            outdata_fake_files=["out_DEN", "out_WFK", "out_1WF", "out_DDB"],
             tmpdata_fake_files=None,
             force_overwrite=force,
             allow_missing=True,
@@ -555,7 +595,7 @@ class Test{maker_name}:
         from jobflow import run_locally
         from pymatgen.core.structure import Structure
         from monty.serialization import loadfn
-        from atomate2.abinit.schemas.core import AbinitTaskDocument
+        from atomate2.abinit.schemas.core import AbinitTaskDoc
 
         # load the initial structure, the maker and the ref_paths from the test_dir
         test_dir = abinit_test_dir / {" / ".join(
@@ -574,7 +614,7 @@ class Test{maker_name}:
 
         # validation the outputs of the flow or job
         output1 = responses[flow_or_job.uuid][1].output
-        assert isinstance(output1, AbinitTaskDocument)
+        assert isinstance(output1, AbinitTaskDoc)
         assert output1.structure == structure
         assert output1.run_number == 1
     """
@@ -584,29 +624,29 @@ class Test{maker_name}:
 
 def save_abinit_maker(maker: Maker) -> None:
     """Save maker, the script used to create it and additional metadata."""
-    import datetime
     import inspect
     import json
     import shutil
     import subprocess
     import warnings
+    from datetime import datetime, timezone
 
     caller_frame = inspect.stack()[1]
     caller_filename_full = caller_frame.filename
-    with open(caller_filename_full) as f:
-        script_str = f.read()
+    with open(caller_filename_full) as file:
+        script_str = file.read()
     git = shutil.which("git")
     author = None
     author_mail = None
     if git:
         name = subprocess.run(
-            "git config user.name".split(),  # noqa: S603
+            "git config user.name".split(),
             capture_output=True,
             encoding="utf-8",
             check=True,
         )
         mail = subprocess.run(
-            "git config user.email".split(),  # noqa: S603
+            "git config user.email".split(),
             capture_output=True,
             encoding="utf-8",
             check=True,
@@ -627,16 +667,16 @@ def save_abinit_maker(maker: Maker) -> None:
                 "You may want to manually set it in the 'maker.json' file.",
                 stacklevel=2,
             )
-    with open("maker.json", "w") as f:
+    with open("maker.json", "w") as file:
         json.dump(
             {
                 "author": author,
                 "author_mail": author_mail,
-                "created_on": str(datetime.datetime.now()),
+                "created_on": str(datetime.now(tz=timezone.utc)),
                 "maker": jsanitize(maker.as_dict()),
                 "script": script_str,
             },
-            f,
+            file,
         )
 
 

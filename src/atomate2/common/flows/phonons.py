@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from jobflow import Flow, Maker
 
+from atomate2 import SETTINGS
 from atomate2.common.jobs.phonons import (
     generate_frequencies_eigenvectors,
     generate_phonon_displacements,
@@ -19,6 +20,7 @@ from atomate2.common.jobs.utils import structure_to_conventional, structure_to_p
 
 if TYPE_CHECKING:
     from pathlib import Path
+    from typing import Literal
 
     from emmet.core.math import Matrix3D
     from pymatgen.core.structure import Structure
@@ -27,7 +29,7 @@ if TYPE_CHECKING:
     from atomate2.forcefields.jobs import ForceFieldRelaxMaker, ForceFieldStaticMaker
     from atomate2.vasp.jobs.base import BaseVaspMaker
 
-SUPPORTED_CODES = frozenset(("vasp", "aims", "forcefields"))
+SUPPORTED_CODES = frozenset(("vasp", "aims", "forcefields", "ase"))
 
 
 @dataclass
@@ -127,12 +129,14 @@ class BasePhononMaker(Maker, ABC):
 
     name: str = "phonon"
     sym_reduce: bool = True
-    symprec: float = 1e-4
+    symprec: float = SETTINGS.PHONON_SYMPREC
     displacement: float = 0.01
     min_length: float | None = 20.0
+    max_length: float | None = None
     prefer_90_degrees: bool = True
+    allow_orthorhombic: bool = False
     get_supercell_size_kwargs: dict = field(default_factory=dict)
-    use_symmetrized_structure: str | None = None
+    use_symmetrized_structure: Literal["primitive", "conventional"] | None = None
     bulk_relax_maker: ForceFieldRelaxMaker | BaseVaspMaker | BaseAimsMaker | None = None
     static_energy_maker: ForceFieldRelaxMaker | BaseVaspMaker | BaseAimsMaker | None = (
         None
@@ -157,8 +161,7 @@ class BasePhononMaker(Maker, ABC):
         total_dft_energy_per_formula_unit: float | None = None,
         supercell_matrix: Matrix3D | None = None,
     ) -> Flow:
-        """
-        Make flow to calculate the phonon properties.
+        """Make flow to calculate the phonon properties.
 
         Parameters
         ----------
@@ -251,9 +254,11 @@ class BasePhononMaker(Maker, ABC):
         # maker to ensure that cell lengths are really larger than threshold
         if supercell_matrix is None:
             supercell_job = get_supercell_size(
-                structure,
-                self.min_length,
-                self.prefer_90_degrees,
+                structure=structure,
+                min_length=self.min_length,
+                max_length=self.max_length,
+                prefer_90_degrees=self.prefer_90_degrees,
+                allow_orthorhombic=self.allow_orthorhombic,
                 **self.get_supercell_size_kwargs,
             )
             jobs.append(supercell_job)

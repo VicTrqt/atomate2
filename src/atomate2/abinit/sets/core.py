@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 import numpy as np
 from abipy.abio.factories import (
@@ -11,6 +11,7 @@ from abipy.abio.factories import (
     ebands_from_gsinput,
     ion_ioncell_relax_input,
     nscf_from_gsinput,
+    scf_for_phonons,
     scf_input,
 )
 from abipy.abio.input_tags import MOLECULAR_DYNAMICS, NSCF, RELAX, SCF
@@ -18,6 +19,8 @@ from abipy.abio.input_tags import MOLECULAR_DYNAMICS, NSCF, RELAX, SCF
 from atomate2.abinit.sets.base import AbinitInputGenerator
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from abipy.abio.inputs import AbinitInput
     from pymatgen.core import Structure
     from pymatgen.io.abinit import PseudoTable
@@ -45,8 +48,7 @@ class StaticSetGenerator(AbinitInputGenerator):
         kpoints_settings: dict | KSampling | None = None,
         input_index: int | None = None,
     ) -> AbinitInput:
-        """
-        Generate the AbinitInput for the input set.
+        """Generate the AbinitInput for the input set.
 
         Removes some standard variables related to relaxation.
         """
@@ -67,6 +69,29 @@ class StaticSetGenerator(AbinitInputGenerator):
             factory_kwargs=factory_kwargs,
             kpoints_settings=kpoints_settings,
         )
+
+
+@dataclass
+class ShgStaticSetGenerator(StaticSetGenerator):
+    """Class to generate static SCF input sets adapted to DFPT SHG computation."""
+
+    factory: Callable = scf_for_phonons
+    factory_kwargs: dict = field(
+        default_factory=lambda: {
+            "smearing": "nosmearing",
+            "spin_mode": "unpolarized",
+            "kppa": 3000,
+        }
+    )
+
+    user_abinit_settings: dict = field(
+        default_factory=lambda: {
+            "nstep": 500,
+            "toldfe": 1e-22,
+            "autoparal": 1,
+            "npfft": 1,
+        }
+    )
 
 
 @dataclass
@@ -207,8 +232,7 @@ class RelaxSetGenerator(AbinitInputGenerator):
         kpoints_settings: dict | KSampling | None = None,
         input_index: int | None = None,
     ) -> AbinitInput:
-        """
-        Generate the AbinitInput for the input set.
+        """Generate the AbinitInput for the input set.
 
         Sets tolmxf and determines the index of the MultiDataset.
         """

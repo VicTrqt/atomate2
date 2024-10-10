@@ -57,10 +57,15 @@ def get_total_energy_per_cell(
 
 @job
 def get_supercell_size(
-    structure: Structure, min_length: float, prefer_90_degrees: bool, **kwargs
+    structure: Structure,
+    min_length: float,
+    max_length: float,
+    prefer_90_degrees: bool,
+    allow_orthorhombic: bool = False,
+    **kwargs,
 ) -> list[list[float]]:
     """
-    Determine supercell size with given min_length.
+    Determine supercell size with given min_length and max_length.
 
     Parameters
     ----------
@@ -68,51 +73,53 @@ def get_supercell_size(
         Input structure that will be used to determine supercell
     min_length: float
         minimum length of cell in Angstrom
+    max_length: float
+        maximum length of cell in Angstrom
     prefer_90_degrees: bool
         if True, the algorithm will try to find a cell with 90 degree angles first
+    allow_orthorhombic: bool
+        if True, orthorhombic supercells are allowed
     **kwargs:
         Additional parameters that can be set.
     """
-    kwargs.setdefault("min_atoms", None)
     kwargs.setdefault("force_diagonal", False)
+    common_kwds = dict(
+        min_length=min_length,
+        max_length=max_length,
+        min_atoms=kwargs.get("min_atoms"),
+        max_atoms=kwargs.get("max_atoms"),
+        step_size=kwargs.get("step_size", 0.1),
+        force_diagonal=kwargs["force_diagonal"],
+    )
 
     if not prefer_90_degrees:
-        kwargs.setdefault("max_atoms", None)
         transformation = CubicSupercellTransformation(
-            min_length=min_length,
-            min_atoms=kwargs["min_atoms"],
-            max_atoms=kwargs["max_atoms"],
-            force_diagonal=kwargs["force_diagonal"],
+            **common_kwds,
             force_90_degrees=False,
+            allow_orthorhombic=allow_orthorhombic,
         )
         transformation.apply_transformation(structure=structure)
     else:
-        max_atoms = kwargs.get("max_atoms", 1000)
-        kwargs.setdefault("angle_tolerance", 1e-2)
         try:
+            common_kwds.update({"max_atoms": kwargs.get("max_atoms", 1200)})
             transformation = CubicSupercellTransformation(
-                min_length=min_length,
-                min_atoms=kwargs["min_atoms"],
-                max_atoms=max_atoms,
-                force_diagonal=kwargs["force_diagonal"],
+                **common_kwds,
                 force_90_degrees=True,
-                angle_tolerance=kwargs["angle_tolerance"],
+                angle_tolerance=kwargs.get("angle_tolerance", 1e-2),
+                allow_orthorhombic=allow_orthorhombic,
             )
             transformation.apply_transformation(structure=structure)
 
         except AttributeError:
-            kwargs.setdefault("max_atoms", None)
-
             transformation = CubicSupercellTransformation(
-                min_length=min_length,
-                min_atoms=kwargs["min_atoms"],
-                max_atoms=kwargs["max_atoms"],
-                force_diagonal=kwargs["force_diagonal"],
+                **common_kwds,
                 force_90_degrees=False,
+                allow_orthorhombic=allow_orthorhombic,
             )
             transformation.apply_transformation(structure=structure)
 
-    return transformation.transformation_matrix.tolist()
+    # matrix from pymatgen has to be transposed
+    return transformation.transformation_matrix.transpose().tolist()
 
 
 @job(data=[Structure])
@@ -171,7 +178,7 @@ def generate_phonon_displacements(
     if cell.magnetic_moments is not None and primitive_matrix == "auto":
         if np.any(cell.magnetic_moments != 0.0):
             raise ValueError(
-                "For materials with magnetic moments specified "
+                "For materials with magnetic moments, "
                 "use_symmetrized_structure must be 'primitive'"
             )
         cell.magnetic_moments = None
