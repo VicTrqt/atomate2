@@ -130,6 +130,7 @@ def check_order(left_output, original_output, right_output,
                 deform_by, static_maker, structure_sf, count=1, last_step=False,
                 light_worker_name = None,
                 heavy_worker_name = None,
+                test = False
                 ):
     positions   = np.array(['left', 'original', 'right'])
     energies    = np.array([left_output['energy'], original_output['energy'], right_output['energy']])
@@ -149,7 +150,7 @@ def check_order(left_output, original_output, right_output,
         raise Exception(f"Problem with the order of the energies: {energies_sorted =} -- {positions_sorted =}")
     
     if last_step:
-        structure_sf_adapted = adapt_structure_sf(structure_sf, structures_sorted[-1])
+        structure_sf_adapted = adapt_structure_sf(structure_sf, structures_sorted[-1], test = test)
         sf_adapted_static_job = static_maker.make(structure_sf_adapted)
         sf_adapted_static_job.name = "sf adapted structure static job"
         if light_worker_name and heavy_worker_name:
@@ -157,11 +158,11 @@ def check_order(left_output, original_output, right_output,
         return Response(addition=sf_adapted_static_job)
 
     if positions_sorted[-1] == 'original':
-        structure_new_left = deform_structure(structure=structures_sorted[-1], type='compression', by=deform_by/2)
+        structure_new_left = deform_structure(structure=structures_sorted[-1], type='compression', by=deform_by/2, test=test)
         static_job_new_left = static_maker.make(structure=structure_new_left)
         static_job_new_left.name = f"left {count} structure static job"
 
-        structure_new_right = deform_structure(structure=structures_sorted[-1], type='tension', by=deform_by/2)
+        structure_new_right = deform_structure(structure=structures_sorted[-1], type='tension', by=deform_by/2, test=test)
         static_job_new_right = static_maker.make(structure=structure_new_right)
         static_job_new_right.name = f"right {count} structure static job"
 
@@ -183,7 +184,7 @@ def check_order(left_output, original_output, right_output,
 
         return Response(addition=flow) 
 
-    structure_new = deform_structure(structure=structures_sorted[-1], type=type_deform_sorted[-1], by=deform_by)
+    structure_new = deform_structure(structure=structures_sorted[-1], type=type_deform_sorted[-1], by=deform_by, test=test)
     static_job_new = static_maker.make(structure=structure_new)
     static_job_new.name = f"{positions_sorted[-1]} {count} structure static job"
     jobs = [static_job_new]
@@ -232,7 +233,8 @@ class ECurveRelaxMaker(Maker):
     def make(
             self,
             structure,
-            structure_sf
+            structure_sf,
+            test=False
     ):
         # Original SF static
         original_sf_static_job = self.static_maker.make(structure=structure_sf)
@@ -260,8 +262,10 @@ class ECurveRelaxMaker(Maker):
             deform_by       = self.deform_by,
             static_maker    = self.static_maker,
             structure_sf    = structure_sf,
+            count = 2,
             light_worker_name = self.light_worker_name,
             heavy_worker_name = self.heavy_worker_name,
+            test = test
             )
 
         if self.light_worker_name and self.heavy_worker_name:
