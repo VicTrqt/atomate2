@@ -165,7 +165,7 @@ def check_order(left_output, original_output, right_output,
         static_job_new_right = static_maker.make(structure=structure_new_right)
         static_job_new_right.name = f"right {count} structure static job"
 
-        flow = Flow[static_job_new_left, static_job_new_right, check_order(
+        flow = Flow([static_job_new_left, static_job_new_right, check_order(
             {'energy': static_job_new_left.output.output.energy, 'structure': static_job_new_left.output.structure},
             {'energy': energies_sorted[-1], 'structure': structures_sorted[-1]},
             {'energy': static_job_new_right.output.output.energy, 'structure': static_job_new_right.output.structure},
@@ -176,7 +176,7 @@ def check_order(left_output, original_output, right_output,
             last_step = True,
             light_worker_name = light_worker_name,
             heavy_worker_name = heavy_worker_name
-            )]
+            )])
         if light_worker_name and heavy_worker_name:
             flow.update_config({"manager_config": {"_fworker": light_worker_name}}, name_filter="check_order", dynamic=False)
             flow.update_config({"manager_config": {"_fworker": heavy_worker_name}}, name_filter="static job", dynamic=False)
@@ -226,8 +226,8 @@ class ECurveRelaxMaker(Maker):
         default_factory=lambda: StaticMaker()
         )
     deform_by = 0.01
-    light_worker_name = None
-    heavy_worker_name = None
+    light_worker_name: str | None = field(default=None)
+    heavy_worker_name: str | None = field(default=None)
 
     def make(
             self,
