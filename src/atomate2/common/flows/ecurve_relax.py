@@ -126,7 +126,11 @@ def adapt_structure_sf(structure_sf, structure, test=True):
     )
 
 @job
-def check_order(left_output, original_output, right_output, deform_by, static_maker, structure_sf, count=1, last_step=False):
+def check_order(left_output, original_output, right_output, 
+                deform_by, static_maker, structure_sf, count=1, last_step=False,
+                light_worker_name = None,
+                heavy_worker_name = None,
+                ):
     positions   = np.array(['left', 'original', 'right'])
     energies    = np.array([left_output['energy'], original_output['energy'], right_output['energy']])
     structures  = [left_output['structure'], original_output['structure'], right_output['structure']]
@@ -148,6 +152,8 @@ def check_order(left_output, original_output, right_output, deform_by, static_ma
         structure_sf_adapted = adapt_structure_sf(structure_sf, structures_sorted[-1])
         sf_adapted_static_job = static_maker.make(structure_sf_adapted)
         sf_adapted_static_job.name = "sf adapted structure static job"
+        if light_worker_name and heavy_worker_name:
+            sf_adapted_static_job.update_config({"manager_config": {"_fworker": heavy_worker_name}}, name_filter="static job", dynamic=False)
         return Response(addition=sf_adapted_static_job)
 
     if positions_sorted[-1] == 'original':
@@ -159,7 +165,7 @@ def check_order(left_output, original_output, right_output, deform_by, static_ma
         static_job_new_right = static_maker.make(structure=structure_new_right)
         static_job_new_right.name = f"right {count} structure static job"
 
-        jobs = [static_job_new_left, static_job_new_right, check_order(
+        flow = Flow[static_job_new_left, static_job_new_right, check_order(
             {'energy': static_job_new_left.output.output.energy, 'structure': static_job_new_left.output.structure},
             {'energy': energies_sorted[-1], 'structure': structures_sorted[-1]},
             {'energy': static_job_new_right.output.output.energy, 'structure': static_job_new_right.output.structure},
@@ -167,9 +173,15 @@ def check_order(left_output, original_output, right_output, deform_by, static_ma
             static_maker    = static_maker,
             structure_sf    = structure_sf,
             count = count+1,
-            last_step = True
+            last_step = True,
+            light_worker_name = light_worker_name,
+            heavy_worker_name = heavy_worker_name
             )]
-        return Response(addition=Flow(jobs)) 
+        if light_worker_name and heavy_worker_name:
+            flow.update_config({"manager_config": {"_fworker": light_worker_name}}, name_filter="check_order", dynamic=False)
+            flow.update_config({"manager_config": {"_fworker": heavy_worker_name}}, name_filter="static job", dynamic=False)
+
+        return Response(addition=flow) 
 
     structure_new = deform_structure(structure=structures_sorted[-1], type=type_deform_sorted[-1], by=deform_by)
     static_job_new = static_maker.make(structure=structure_new)
@@ -184,7 +196,9 @@ def check_order(left_output, original_output, right_output, deform_by, static_ma
             deform_by       = deform_by,
             static_maker    = static_maker,
             structure_sf    = structure_sf,
-            count = count+1
+            count = count+1,
+            light_worker_name = light_worker_name,
+            heavy_worker_name = heavy_worker_name
             ))
     elif positions_sorted[-1] == 'left':
         jobs.append(check_order(
@@ -194,10 +208,16 @@ def check_order(left_output, original_output, right_output, deform_by, static_ma
             deform_by       = deform_by,
             static_maker    = static_maker,
             structure_sf    = structure_sf,
-            count = count+1
+            count = count+1,
+            light_worker_name = light_worker_name,
+            heavy_worker_name = heavy_worker_name
             ))
     
-    return Response(addition=Flow(jobs))
+    flow = Flow(jobs)
+    if light_worker_name and heavy_worker_name:
+        flow.update_config({"manager_config": {"_fworker": light_worker_name}}, name_filter="check_order", dynamic=False)
+        flow.update_config({"manager_config": {"_fworker": heavy_worker_name}}, name_filter="static job", dynamic=False)
+    return Response(addition=flow)
 
 @dataclass
 class ECurveRelaxMaker(Maker):
@@ -206,6 +226,8 @@ class ECurveRelaxMaker(Maker):
         default_factory=lambda: StaticMaker()
         )
     deform_by = 0.01
+    light_worker_name = None
+    heavy_worker_name = None
 
     def make(
             self,
@@ -237,11 +259,20 @@ class ECurveRelaxMaker(Maker):
             right_output    = {'energy': right_static_job.output.output.energy, 'structure': right_static_job.output.structure},
             deform_by       = self.deform_by,
             static_maker    = self.static_maker,
-            structure_sf    = structure_sf
+            structure_sf    = structure_sf,
+            light_worker_name = self.light_worker_name,
+            heavy_worker_name = self.heavy_worker_name,
             )
 
+        if self.light_worker_name and self.heavy_worker_name:
+            check_job.update_config({"manager_config": {"_fworker": self.light_worker_name}}, name_filter="check_order", dynamic=False)
+            original_sf_static_job.update_config({"manager_config": {"_fworker": self.heavy_worker_name}}, name_filter="static job", dynamic=False)
+            original_static_job.update_config({"manager_config": {"_fworker": self.heavy_worker_name}}, name_filter="static job", dynamic=False)
+            left_static_job.update_config({"manager_config": {"_fworker": self.heavy_worker_name}}, name_filter="static job", dynamic=False)
+            right_static_job.update_config({"manager_config": {"_fworker": self.heavy_worker_name}}, name_filter="static job", dynamic=False)
 
-        jobs = [original_static_job, left_static_job, right_static_job, check_job]
+
+        jobs = [original_sf_static_job, original_static_job, left_static_job, right_static_job, check_job]
 
 
         return Flow(jobs=jobs, output=check_job.output, name=self.name)
