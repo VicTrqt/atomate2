@@ -7,7 +7,7 @@ import warnings
 warnings.filterwarnings("ignore")
 import numpy as np
 
-def deform_structure(structure, type, by, test=True):
+def deform_structure(structure, type, by, test=False):
     if test:
         # Compress or extend the parameter of the conventional cell
         if type == 'compression':
@@ -84,7 +84,7 @@ def deform_structure(structure, type, by, test=True):
         coords_are_cartesian = False
     )
 
-def adapt_structure_sf(structure_sf, structure, test=True):
+def adapt_structure_sf(structure_sf, structure, test=False):
     if test:
         # Find the new sf lattice with the same angle and orientation as the initial one
         matrix_div = np.ones((3,3))
@@ -176,7 +176,8 @@ def check_order(left_output, original_output, right_output,
             count = count+1,
             last_step = True,
             light_worker_name = light_worker_name,
-            heavy_worker_name = heavy_worker_name
+            heavy_worker_name = heavy_worker_name,
+            test = test
             )])
         if light_worker_name and heavy_worker_name:
             flow.update_config({"manager_config": {"_fworker": light_worker_name}}, name_filter="check_order", dynamic=False)
@@ -199,7 +200,8 @@ def check_order(left_output, original_output, right_output,
             structure_sf    = structure_sf,
             count = count+1,
             light_worker_name = light_worker_name,
-            heavy_worker_name = heavy_worker_name
+            heavy_worker_name = heavy_worker_name,
+            test = test
             ))
     elif positions_sorted[-1] == 'left':
         jobs.append(check_order(
@@ -211,7 +213,8 @@ def check_order(left_output, original_output, right_output,
             structure_sf    = structure_sf,
             count = count+1,
             light_worker_name = light_worker_name,
-            heavy_worker_name = heavy_worker_name
+            heavy_worker_name = heavy_worker_name,
+            test = test
             ))
     
     flow = Flow(jobs)
@@ -245,12 +248,12 @@ class ECurveRelaxMaker(Maker):
         original_static_job.name = "original structure static job"
 
         # Left static (compression)
-        left_structure = deform_structure(structure=structure, type='compression', by=self.deform_by)
+        left_structure = deform_structure(structure=structure, type='compression', by=self.deform_by, test=test)
         left_static_job = self.static_maker.make(structure=left_structure)
         left_static_job.name = "left 1 structure static job"
 
         # right static (tension)
-        right_structure = deform_structure(structure=structure, type='tension', by=self.deform_by)
+        right_structure = deform_structure(structure=structure, type='tension', by=self.deform_by, test=test)
         right_static_job = self.static_maker.make(structure=right_structure)
         right_static_job.name = "right 1 structure static job"
 
