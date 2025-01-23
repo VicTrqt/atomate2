@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional, Union
+from typing import Any, Optional, Union
 
-if TYPE_CHECKING:
-    pass
-
+from abipy.abio.outputs import AbinitOutputFile
 from abipy.electrons.gsr import GsrFile
 from abipy.flowtk import events
 from abipy.flowtk.utils import File
@@ -18,8 +16,15 @@ from emmet.core.math import Matrix3D, Vector3D
 from jobflow.utils import ValueEnum
 from pydantic import BaseModel, Field
 from pymatgen.core import Structure
+from typing_extensions import Self
 
-from atomate2.abinit.utils.common import LOG_FILE_NAME, MPIABORTFILE, get_event_report
+from atomate2.abinit.schemas.outfiles import AbinitStoredFile
+from atomate2.abinit.utils.common import (
+    LOG_FILE_NAME,
+    MPIABORTFILE,
+    OUTPUT_FILE_NAME,
+    get_event_report,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +45,8 @@ class AbinitObject(ValueEnum):
     ELECTRON_DENSITY = "electron_density"  # e_density
     WFN = "wfn"  # Wavefunction file
     TRAJECTORY = "trajectory"
+    DDBFILE = "ddb"  # DDB file as string
+    POTENTIAL = "potential"  # POT file as b-string
 
 
 class CalculationOutput(BaseModel):
@@ -69,10 +76,10 @@ class CalculationOutput(BaseModel):
         The valence band maximum in eV (if system is not metallic)
     """
 
-    energy: float = Field(
+    energy: Optional[float] = Field(
         None, description="The final total DFT energy for the calculation"
     )
-    energy_per_atom: float = Field(
+    energy_per_atom: Optional[float] = Field(
         None, description="The final DFT energy per atom for the calculation"
     )
 
@@ -80,7 +87,7 @@ class CalculationOutput(BaseModel):
         None, description="The final structure from the calculation"
     )
 
-    efermi: float = Field(
+    efermi: Optional[float] = Field(
         None, description="The Fermi level from the calculation in eV"
     )
 
@@ -105,14 +112,19 @@ class CalculationOutput(BaseModel):
         description="The valence band maximum, or HOMO for molecules, in eV "
         "(if system is not metallic)",
     )
+    walltime: Optional[float] = Field(
+        None, description="Overall walltime to complete the calculation."
+    )
+    cputime: Optional[float] = Field(
+        None, description="Overall cputime to complete the calculation."
+    )
 
     @classmethod
     def from_abinit_gsr(
         cls,
         output: GsrFile,  # Must use auto_load kwarg when passed
-    ) -> CalculationOutput:
-        """
-        Create an Abinit output document from Abinit outputs.
+    ) -> Self:
+        """Create an Abinit output document from Abinit outputs.
 
         Parameters
         ----------
@@ -162,6 +174,34 @@ class CalculationOutput(BaseModel):
             stress=stress,
         )
 
+    @classmethod
+    def from_abinit_out(
+        cls,
+        output: AbinitOutputFile,  # Must use auto_load kwarg when passed
+    ) -> CalculationOutput:
+        """
+        Create an Abinit output document from Abinit outputs.
+
+        Parameters
+        ----------
+        output: .AbinitOutput
+            An AbinitOutput object.
+
+        Returns
+        -------
+        The Abinit calculation output document.
+        """
+        structure = output.final_structure
+
+        walltime = output.overall_walltime
+        cputime = output.overall_cputime
+
+        return cls(
+            structure=structure,
+            walltime=walltime,
+            cputime=cputime,
+        )
+
 
 class Calculation(BaseModel):
     """Full Abinit calculation inputs and outputs.
@@ -190,7 +230,9 @@ class Calculation(BaseModel):
     has_abinit_completed: TaskState = Field(
         None, description="Whether Abinit completed the calculation successfully"
     )
-    output: CalculationOutput = Field(None, description="The Abinit calculation output")
+    output: Optional[CalculationOutput] = Field(
+        None, description="The Abinit calculation output"
+    )
     completed_at: str = Field(
         None, description="Timestamp for when the calculation was completed"
     )
@@ -211,7 +253,11 @@ class Calculation(BaseModel):
         abinit_gsr_file: Path | str = "out_GSR.nc",
         abinit_log_file: Path | str = LOG_FILE_NAME,
         abinit_abort_file: Path | str = MPIABORTFILE,
-    ) -> tuple[Calculation, dict[AbinitObject, dict]]:
+        abinit_out_file: Path | str = OUTPUT_FILE_NAME,
+        abinit_outddb_file: Path | str = "out_DDB",
+        abinit_outpot_file: Path | str = "out_POT",
+        files_to_store: list | None = None,
+    ) -> tuple[Self, dict[AbinitObject, dict]]:
         """
         Create an Abinit calculation document from a directory and file paths.
 
@@ -222,11 +268,19 @@ class Calculation(BaseModel):
         task_name: str
             The task name.
         abinit_gsr_file: Path or str
-            Path to the GSR output of abinit job, relative to dir_name.
+            Path to the GSR output of the abinit job, relative to dir_name.
         abinit_log_file: Path or str
-            Path to the main log of abinit job, relative to dir_name.
+            Path to the main log of the abinit job, relative to dir_name.
         abinit_abort_file: Path or str
             Path to the main abort file of abinit job, relative to dir_name.
+        abinit_out_file: Path or str
+            Path to the main output file of the abinit job, relative to dir_name.
+        abinit_outddb_file: Path or str
+            Path to the output _DDB file of the abinit job, relative to dir_name.
+        abinit_outpot_file: Path or str
+            Path to the output _POT file of the abinit job, relative to dir_name.
+        store_pot_files: bool
+            True if the files _POT should be saved.
 
         Returns
         -------
@@ -237,12 +291,42 @@ class Calculation(BaseModel):
         abinit_gsr_file = dir_name / abinit_gsr_file
         abinit_log_file = dir_name / abinit_log_file
         abinit_abort_file = dir_name / abinit_abort_file
+        abinit_out_file = dir_name / abinit_out_file
+        abinit_outddb_file = dir_name / abinit_outddb_file
+        abinit_outpot_file = dir_name / abinit_outpot_file
 
-        abinit_gsr = GsrFile.from_file(abinit_gsr_file)
+        abinit_objects: dict[AbinitObject, Any] = {}
+        if files_to_store is None:
+            files_to_store = []
+        if abinit_outddb_file.exists() and "DDB" in files_to_store:
+            abinit_objects[AbinitObject.DDBFILE] = AbinitStoredFile.from_file(  # type: ignore[index]
+                filepath=abinit_outddb_file, data_type=str
+            )
+        if abinit_outpot_file.exists() and "POT" in files_to_store:
+            abinit_objects[AbinitObject.POTENTIAL] = AbinitStoredFile.from_file(  # type: ignore[index]
+                filepath=abinit_outpot_file, data_type=bytes
+            )
 
-        completed_at = str(datetime.fromtimestamp(os.stat(abinit_log_file).st_mtime))
+        output_doc = None
+        if abinit_out_file.exists():
+            abinit_out = AbinitOutputFile.from_file(abinit_out_file)
+            output_doc = CalculationOutput.from_abinit_out(abinit_out)
+        if abinit_gsr_file.exists():
+            abinit_gsr = GsrFile.from_file(abinit_gsr_file)
+            output_doc_gsr = CalculationOutput.from_abinit_gsr(abinit_gsr)
+            if not output_doc:
+                output_doc = output_doc_gsr
+            else:
+                update_data = output_doc_gsr.model_dump(exclude_unset=True)
+                output_doc = output_doc.model_copy(update=update_data, deep=True)
+        if not output_doc:
+            raise FileNotFoundError(f"Neither {abinit_out_file} nor {abinit_gsr_file}\
+                    exists. This means that there is no output, \
+                    which is not normal.")
 
-        output_doc = CalculationOutput.from_abinit_gsr(abinit_gsr)
+        completed_at = str(
+            datetime.fromtimestamp(os.stat(abinit_log_file).st_mtime, tz=timezone.utc)
+        )
 
         report = None
         has_abinit_completed = TaskState.FAILED
@@ -259,19 +343,18 @@ class Calculation(BaseModel):
             if report.run_completed:
                 has_abinit_completed = TaskState.SUCCESS
 
-        except Exception as exc:
+        except (ValueError, RuntimeError, Exception) as exc:
             msg = f"{cls} exception while parsing event_report:\n{exc}"
             logger.critical(msg)
 
-        return (
-            cls(
-                dir_name=str(dir_name),
-                task_name=task_name,
-                abinit_version=abinit_gsr.abinit_version,
-                has_abinit_completed=has_abinit_completed,
-                completed_at=completed_at,
-                output=output_doc,
-                event_report=report,
-            ),
-            None,  # abinit_objects,
+        instance = cls(
+            dir_name=str(dir_name),
+            task_name=task_name,
+            abinit_version=abinit_out.version,
+            has_abinit_completed=has_abinit_completed,
+            completed_at=completed_at,
+            output=output_doc,
+            event_report=report,
         )
+
+        return (instance, abinit_objects)

@@ -8,7 +8,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from abipy.abio.inputs import AbinitInput, MultiDataset
@@ -37,14 +37,148 @@ from atomate2.abinit.utils.common import (
     InitializationError,
     get_final_structure,
 )
+from atomate2.utils.path import strip_hostname
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Callable, Iterable, Sequence
 
     from pymatgen.core.structure import Structure
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class AbinitMixinInputGenerator(InputGenerator):
+    """
+    A class to generate input sets for Abinit and related utilities.
+
+    Parameters
+    ----------
+    calc_type
+        A short description of the calculation type
+    prev_outputs_deps
+        Defines the files that needs to be linked from previous calculations and
+        are required for the execution of the current calculation.
+        The format is a tuple where each element is a list of  "|" separated
+        runlevels (as defined in the AbinitInput object) followed by a colon and
+        a list of "|" list of extensions of files that needs to be linked.
+        The runlevel defines the type of calculations from which the file can
+        be linked. An example is (f"{NSCF}:WFK",).
+    """
+
+    calc_type: str
+    prev_outputs_deps: str | tuple | None
+
+    @staticmethod
+    def check_format_prev_dirs(
+        prev_dirs: str | tuple | list | Path | None,
+    ) -> list[str] | None:
+        """Check and format the prev_dirs (restart or dependency)."""
+        if prev_dirs is None:
+            return None
+        if isinstance(prev_dirs, str | Path):
+            return [str(prev_dirs)]
+        return [str(prev_dir) for prev_dir in prev_dirs]
+
+    def resolve_deps(
+        self, prev_dirs: list[str], deps: str | tuple, check_runlevel: bool = True
+    ) -> tuple[dict, list]:
+        """Resolve dependencies.
+
+        This method assumes that prev_dirs is in the correct format, i.e.
+        a list of directories as str or Path.
+        """
+        input_files = []
+        deps_irdvars = {}
+        for prev_dir in prev_dirs:
+            if check_runlevel:
+                abinit_input = load_abinit_input(prev_dir)
+            for dep in deps:
+                runlevel = set(dep.split(":")[0].split("|"))
+                exts = list(dep.split(":")[1].split("|"))
+                if not check_runlevel or runlevel.intersection(abinit_input.runlevel):
+                    irdvars, inp_files = self.resolve_dep_exts(
+                        prev_dir=prev_dir, exts=exts
+                    )
+                    input_files.extend(inp_files)
+                    deps_irdvars.update(irdvars)
+
+        return deps_irdvars, input_files
+
+    @staticmethod
+    def _get_in_file_name(out_filepath: str) -> str:
+        in_file = os.path.basename(out_filepath)
+        in_file = in_file.replace(OUTDATAFILE_PREFIX, INDATAFILE_PREFIX, 1)
+
+        return os.path.basename(in_file).replace("WFQ", "WFK", 1)
+
+    @staticmethod
+    def resolve_dep_exts(prev_dir: str, exts: list[str]) -> tuple:
+        """Return irdvars and corresponding file for a given dependency.
+
+        This method assumes that prev_dir is in the correct format,
+        i.e. a directory as a str or Path.
+        """
+        prev_dir = strip_hostname(prev_dir)  # TODO: to FileCLient?
+        prev_outdir = Directory(os.path.join(prev_dir, OUTDIR_NAME))
+        inp_files = []
+
+        for ext in exts:
+            # TODO: how to check that we have the files we need ?
+            #  Should we raise if don't find at least one file for a given extension ?
+            if ext in ("1WF", "1DEN"):
+                # Special treatment for 1WF and 1DEN files
+                if ext == "1WF":
+                    files = prev_outdir.find_1wf_files()
+                elif ext == "1DEN":
+                    files = prev_outdir.find_1den_files()
+                else:
+                    raise RuntimeError("Should not occur.")
+                if files is not None:
+                    inp_files = [
+                        (f.path, AbinitMixinInputGenerator._get_in_file_name(f.path))
+                        for f in files
+                    ]
+                    irdvars = irdvars_for_ext(ext)
+                    break
+            elif ext == "DEN":
+                # Special treatment for DEN files
+                # In case of relaxations or MD, there may be several TIM?_DEN files
+                # First look for the standard out_DEN file.
+                # If not found, look for the last TIM?_DEN file.
+                out_den = prev_outdir.path_in(f"{OUTDATAFILE_PREFIX}_DEN")
+                if os.path.exists(out_den):
+                    irdvars = irdvars_for_ext("DEN")
+                    inp_files.append(
+                        (out_den, AbinitMixinInputGenerator._get_in_file_name(out_den))
+                    )
+                    break
+                last_timden = prev_outdir.find_last_timden_file()
+                if last_timden is not None:
+                    if last_timden.path.endswith(".nc"):
+                        in_file_name = f"{INDATAFILE_PREFIX}_DEN.nc"
+                    else:
+                        in_file_name = f"{INDATAFILE_PREFIX}_DEN"
+                    inp_files.append((last_timden.path, in_file_name))
+                    irdvars = irdvars_for_ext("DEN")
+                    break
+            else:
+                out_file = prev_outdir.has_abiext(ext)
+                irdvars = irdvars_for_ext(ext)
+                if out_file:
+                    inp_files.append(
+                        (
+                            out_file,
+                            AbinitMixinInputGenerator._get_in_file_name(out_file),
+                        )
+                    )
+                    break
+        else:
+            msg = f"Cannot find {' or '.join(exts)} file to restart from."
+            logger.error(msg)
+            raise InitializationError(msg)
+        return irdvars, inp_files
 
 
 class AbinitInputSet(InputSet):
@@ -120,11 +254,15 @@ class AbinitInputSet(InputSet):
             if ext is None:
                 return False
             irdvars = irdvars_for_ext(ext)
+            # Need to consider irdddk to read 1WF files
+            if ext == "1WF":
+                irdvars["irdddk"] = 1
             for irdvar, irdval in irdvars.items():
-                if irdvar not in self.abinit_input:
-                    return False
-                if self.abinit_input[irdvar] != irdval:
-                    return False
+                if irdvar in self.abinit_input and self.abinit_input[irdvar] == irdval:
+                    # at least one irdvar has the right irdval in abinit_input
+                    break
+            else:
+                return False
         return True
 
     @property
@@ -239,7 +377,7 @@ def as_pseudo_table(pseudos: str | Sequence[Pseudo]) -> PseudoTable:
 
 
 @dataclass
-class AbinitInputGenerator(InputGenerator):
+class AbinitInputGenerator(AbinitMixinInputGenerator):
     """
     A class to generate Abinit input sets.
 
@@ -296,7 +434,7 @@ class AbinitInputGenerator(InputGenerator):
         Tolerance for symmetry finding, used for line mode band structure k-points.
     """
 
-    factory: Callable
+    factory: Callable | None = None
     calc_type: str = "abinit_calculation"
     pseudos: str | list[str] | PseudoTable | None = "ONCVPSP-PBE-SR-PDv0.4:standard"
     factory_kwargs: dict = field(default_factory=dict)
@@ -326,11 +464,10 @@ class AbinitInputGenerator(InputGenerator):
         structure : Structure
             Pymatgen Structure object.
         restart_from : str or Path or list or tuple
-            Directory (as a str or Path) or list/tuple of 1 directory (as a str
-            or Path) to restart from.
+            Directory or list/tuple of 1 directory to restart from.
         prev_outputs : str or Path or list or tuple
-            Directory (as a str or Path) or list/tuple of directories (as a str
-            or Path) needed as dependencies for the AbinitInputSet generated.
+            Directory or list/tuple of directories needed as dependencies for the
+                AbinitInputSet generated.
         """
         # Get the pseudos as a PseudoTable
         pseudos = as_pseudo_table(self.pseudos) if self.pseudos else None
@@ -356,7 +493,7 @@ class AbinitInputGenerator(InputGenerator):
         else:
             if prev_outputs is not None and not self.prev_outputs_deps:
                 raise RuntimeError(
-                    f"Previous outputs not allowed for {self.__class__.__name__}."
+                    f"Previous outputs not allowed for {type(self).__name__}."
                 )
             abinit_input = self.get_abinit_input(
                 structure=structure,
@@ -388,13 +525,14 @@ class AbinitInputGenerator(InputGenerator):
             link_files=True,
         )
 
+    @staticmethod
     def check_format_prev_dirs(
-        self, prev_dirs: str | tuple | list | Path | None
+        prev_dirs: str | tuple | list | Path | None,
     ) -> list[str] | None:
         """Check and format the prev_dirs (restart or dependency)."""
         if prev_dirs is None:
             return None
-        if isinstance(prev_dirs, (str, Path)):
+        if isinstance(prev_dirs, str | Path):
             return [str(prev_dirs)]
         return [str(prev_dir) for prev_dir in prev_dirs]
 
@@ -436,11 +574,12 @@ class AbinitInputGenerator(InputGenerator):
         a list of directories as str or Path.
         """
         abinit_inputs = {}
-        for prev_dir in prev_dirs:
+        for prev_d in prev_dirs:
+            prev_dir = strip_hostname(prev_d)  # TODO: to FileCLient?
             abinit_input = load_abinit_input(prev_dir)
-            for var_name, runlevels in prev_inputs_kwargs.items():
+            for var_name, run_levels in prev_inputs_kwargs.items():
                 if abinit_input.runlevel and abinit_input.runlevel.intersection(
-                    runlevels
+                    run_levels
                 ):
                     if var_name in abinit_inputs:
                         msg = (
@@ -461,76 +600,6 @@ class AbinitInputGenerator(InputGenerator):
 
         return abinit_inputs
 
-    @staticmethod
-    def _get_in_file_name(out_filepath: str) -> str:
-        in_file = os.path.basename(out_filepath)
-        in_file = in_file.replace(OUTDATAFILE_PREFIX, INDATAFILE_PREFIX, 1)
-
-        return os.path.basename(in_file).replace("WFQ", "WFK", 1)
-
-    @staticmethod
-    def resolve_dep_exts(prev_dir: str, exts: list[str]) -> tuple:
-        """Return irdvars and corresponding file for a given dependency.
-
-        This method assumes that prev_dir is in the correct format,
-        i.e. a directory as a str or Path.
-        """
-        prev_outdir = Directory(os.path.join(prev_dir, OUTDIR_NAME))
-        inp_files = []
-
-        for ext in exts:
-            # TODO: how to check that we have the files we need ?
-            #  Should we raise if don't find at least one file for a given extension ?
-            if ext in ("1WF", "1DEN"):
-                # Special treatment for 1WF and 1DEN files
-                if ext == "1WF":
-                    files = prev_outdir.find_1wf_files()
-                elif ext == "1DEN":
-                    files = prev_outdir.find_1den_files()
-                else:
-                    raise RuntimeError("Should not occur.")
-                if files is not None:
-                    inp_files = [
-                        (f.path, AbinitInputGenerator._get_in_file_name(f.path))
-                        for f in files
-                    ]
-                    irdvars = irdvars_for_ext(ext)
-                    break
-            elif ext == "DEN":
-                # Special treatment for DEN files
-                # In case of relaxations or MD, there may be several TIM?_DEN files
-                # First look for the standard out_DEN file.
-                # If not found, look for the last TIM?_DEN file.
-                out_den = prev_outdir.path_in(f"{OUTDATAFILE_PREFIX}_DEN")
-                if os.path.exists(out_den):
-                    irdvars = irdvars_for_ext("DEN")
-                    inp_files.append(
-                        (out_den, AbinitInputGenerator._get_in_file_name(out_den))
-                    )
-                    break
-                last_timden = prev_outdir.find_last_timden_file()
-                if last_timden is not None:
-                    if last_timden.path.endswith(".nc"):
-                        in_file_name = f"{INDATAFILE_PREFIX}_DEN.nc"
-                    else:
-                        in_file_name = f"{INDATAFILE_PREFIX}_DEN"
-                    inp_files.append((last_timden.path, in_file_name))
-                    irdvars = irdvars_for_ext("DEN")
-                    break
-            else:
-                out_file = prev_outdir.has_abiext(ext)
-                irdvars = irdvars_for_ext(ext)
-                if out_file:
-                    inp_files.append(
-                        (out_file, AbinitInputGenerator._get_in_file_name(out_file))
-                    )
-                    break
-        else:
-            msg = f"Cannot find {' or '.join(exts)} file to restart from."
-            logger.error(msg)
-            raise InitializationError(msg)
-        return irdvars, inp_files
-
     def get_abinit_input(
         self,
         structure: Structure | None = None,
@@ -541,8 +610,7 @@ class AbinitInputGenerator(InputGenerator):
         kpoints_settings: dict | KSampling | None = None,
         input_index: int | None = None,
     ) -> AbinitInput:
-        """
-        Generate the AbinitInput for the input set.
+        """Generate the AbinitInput for the input set.
 
         Uses the defined factory function and additional parameters from user
         and subclasses.
@@ -574,7 +642,7 @@ class AbinitInputGenerator(InputGenerator):
         if self.factory_prev_inputs_kwargs:
             if not prev_outputs:
                 raise RuntimeError(
-                    f"No previous_outputs. Required for {self.__class__.__name__}."
+                    f"No previous_outputs. Required for {type(self).__name__}."
                 )
 
             # TODO consider cases where structure might be defined even if
@@ -589,18 +657,16 @@ class AbinitInputGenerator(InputGenerator):
             )
             total_factory_kwargs.update(abinit_inputs)
 
-        else:
-            # TODO check if this should be removed or the check be improved
-            if structure is None:
-                msg = (
-                    f"Structure is mandatory for {self.__class__.__name__} "
-                    f"generation since no previous output is used."
-                )
-                raise RuntimeError(msg)
+        elif structure is None:
+            msg = (
+                f"Structure is mandatory for {type(self).__name__} "
+                f"generation since no previous output is used."
+            )
+            raise RuntimeError(msg)
 
         if not self.prev_outputs_deps and prev_outputs:
             msg = (
-                f"Previous outputs not allowed for {self.__class__.__name__} "
+                f"Previous outputs not allowed for {type(self).__name__} "
                 "Consider if restart_from argument of get_input_set method "
                 "can fit your needs instead."
             )

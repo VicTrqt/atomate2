@@ -4,17 +4,8 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from pathlib import Path
-
-    from abipy.abio.inputs import AbinitInput
-    from abipy.core.structure import Structure
-    from abipy.flowtk.events import EventReport
-    from jobflow import Flow, Job
-
-    from atomate2.abinit.utils.history import JobHistory
 
 from abipy.abio.outputs import AbinitOutputFile
 from abipy.dfpt.ddb import DdbFile
@@ -23,6 +14,17 @@ from abipy.flowtk import events
 from abipy.flowtk.utils import Directory, File
 from monty.json import MSONable
 from monty.serialization import MontyDecoder
+
+from atomate2.utils.path import strip_hostname
+
+if TYPE_CHECKING:
+    from abipy.abio.inputs import AbinitInput
+    from abipy.core.structure import Structure
+    from abipy.flowtk.events import EventReport
+    from jobflow import Flow, Job
+    from typing_extensions import Self
+
+    from atomate2.abinit.utils.history import JobHistory
 
 TMPDIR_NAME = "tmpdata"
 OUTDIR_NAME = "outdata"
@@ -38,6 +40,8 @@ LOG_FILE_NAME = "run.log"
 OUTPUT_FILE_NAME = "run.abo"
 OUTNC_FILE_NAME = "out_OUT.nc"
 INPUT_FILE_NAME: str = "run.abi"
+MRGDDB_INPUT_FILE_NAME: str = "mrgddb.in"
+ANADDB_INPUT_FILE_NAME: str = "anaddb.in"
 MPIABORTFILE = "__ABI_MPIABORTFILE__"
 DUMMY_FILENAME = "__DUMMY__"
 ELPHON_OUTPUT_FILE_NAME = "run.abo_elphon"
@@ -142,28 +146,28 @@ class AbinitRuntimeError(AbiAtomateError):
 
     def to_dict(self) -> dict:
         """Create dictionary representation of the error."""
-        d = {"num_errors": self.num_errors, "num_warnings": self.num_warnings}
+        dct = {"num_errors": self.num_errors, "num_warnings": self.num_warnings}
         if self.errors:
             errors = [error.as_dict() for error in self.errors]
-            d["errors"] = errors
+            dct["errors"] = errors
         if self.warnings:
             warnings = [warning.as_dict() for warning in self.warnings]
-            d["warnings"] = warnings
+            dct["warnings"] = warnings
         if self.msg:
-            d["error_message"] = self.msg
+            dct["error_message"] = self.msg
 
-        d["error_code"] = self.ERROR_CODE
-        d["@module"] = type(self).__module__
-        d["@class"] = type(self).__name__
+        dct["error_code"] = self.ERROR_CODE
+        dct["@module"] = type(self).__module__
+        dct["@class"] = type(self).__name__
 
-        return d
+        return dct
 
     def as_dict(self) -> dict:
         """Create dictionary representation of the error."""
         return self.to_dict()
 
     @classmethod
-    def from_dict(cls, d: dict) -> AbinitRuntimeError:
+    def from_dict(cls, d: dict) -> Self:
         """Create instance of the error from its dictionary representation."""
         dec = MontyDecoder()
         warnings = (
@@ -236,16 +240,16 @@ class UnconvergedError(AbinitRuntimeError):
 
     def to_dict(self) -> dict:
         """Create dictionary representation of the error."""
-        d = super().to_dict()
-        d["abinit_input"] = self.abinit_input.as_dict() if self.abinit_input else None
-        d["restart_info"] = self.restart_info.as_dict() if self.restart_info else None
-        d["history"] = self.history.as_dict() if self.history else None
-        d["@module"] = type(self).__module__
-        d["@class"] = type(self).__name__
-        return d
+        dct = super().to_dict()
+        dct["abinit_input"] = self.abinit_input.as_dict() if self.abinit_input else None
+        dct["restart_info"] = self.restart_info.as_dict() if self.restart_info else None
+        dct["history"] = self.history.as_dict() if self.history else None
+        dct["@module"] = type(self).__module__
+        dct["@class"] = type(self).__name__
+        return dct
 
     @classmethod
-    def from_dict(cls, d: dict) -> UnconvergedError:
+    def from_dict(cls, d: dict) -> Self:
         """Create instance of the error from its dictionary representation."""
         dec = MontyDecoder()
         warnings = (
@@ -319,7 +323,7 @@ class RestartInfo(MSONable):
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> RestartInfo:
+    def from_dict(cls, d: dict) -> Self:
         """Create instance of the error from its dictionary representation."""
         return cls(
             previous_dir=d["previous_dir"],
@@ -345,6 +349,7 @@ def get_final_structure(dir_name: Path | str) -> Structure:
     1. from the output file of abinit (run.abo).
     2. from the gsr file of abinit (out_GSR.nc).
     """
+    dir_name = strip_hostname(dir_name)
     gsr_path = Directory(os.path.join(dir_name, OUTDIR_NAME)).has_abiext("GSR")
     if gsr_path:
         # Open the GSR file.
@@ -377,7 +382,9 @@ def get_final_structure(dir_name: Path | str) -> Structure:
     raise RuntimeError("Could not get final structure.")
 
 
-def get_event_report(ofile: File, mpiabort_file: File) -> EventReport | None:
+def get_event_report(
+    ofile: File, mpiabort_file: File | None = None
+) -> EventReport | None:
     """Get report from abinit calculation.
 
     This analyzes the main output file for possible Errors or Warnings.
@@ -398,7 +405,7 @@ def get_event_report(ofile: File, mpiabort_file: File) -> EventReport | None:
     parser = events.EventsParser()
 
     if not ofile.exists:
-        if not mpiabort_file.exists:
+        if not mpiabort_file or not mpiabort_file.exists:
             return None
         # ABINIT abort file without log!
 
@@ -408,7 +415,7 @@ def get_event_report(ofile: File, mpiabort_file: File) -> EventReport | None:
         report = parser.parse(ofile.path)
 
         # Add events found in the ABI_MPIABORTFILE.
-        if mpiabort_file.exists:
+        if mpiabort_file and mpiabort_file.exists:
             logger.critical("Found ABI_MPIABORTFILE!")
             abort_report = parser.parse(mpiabort_file.path)
             if len(abort_report) == 0:
@@ -424,9 +431,34 @@ def get_event_report(ofile: File, mpiabort_file: File) -> EventReport | None:
                     report.append(last_abort_event)
                 else:
                     report.append(last_abort_event)
-    except Exception as exc:
+    except (ValueError, RuntimeError, Exception) as exc:
         # Return a report with an error entry with info on the exception.
         logger.critical(f"{ofile}: Exception while parsing ABINIT events:\n {exc!s}")
         return parser.report_exception(ofile.path, exc)
     else:
         return report
+
+
+def get_mrgddb_report(
+    logfile: str | Path,
+) -> dict:
+    """Get report from mrgddb.
+
+    This returns a dict with a "run_completed" key that is True
+    if "completed successfully" is present in the log.
+
+    Parameters
+    ----------
+    logfile : File
+        Output file to be parsed. Should be either the log file (stdout).
+
+    Returns
+    -------
+    dict
+        dict with bool "run_completed" key.
+    """
+    if not Path(logfile).exists:
+        return {"run_completed": False}
+    with open(str(logfile)) as f:
+        last_line = f.readlines()[-1]
+    return {"run_completed": "completed successfully" in last_line}
