@@ -198,6 +198,7 @@ class Atomate2Settings(BaseSettings):
     ABINIT_MPIRUN_CMD: Optional[str] = Field(None, description="Mpirun command.")
     ABINIT_CMD: str = Field("abinit", description="Abinit command.")
     ABINIT_MRGDDB_CMD: str = Field("mrgddb", description="Mrgddb command.")
+    ABINIT_MRGDV_CMD: str = Field("mrgdv", description="Mrgdv command.")
     ABINIT_ANADDB_CMD: str = Field("anaddb", description="Anaddb command.")
     ABINIT_COPY_DEPS: bool = Field(
         default=False,

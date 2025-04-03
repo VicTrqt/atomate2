@@ -41,6 +41,7 @@ OUTPUT_FILE_NAME = "run.abo"
 OUTNC_FILE_NAME = "out_OUT.nc"
 INPUT_FILE_NAME: str = "run.abi"
 MRGDDB_INPUT_FILE_NAME: str = "mrgddb.in"
+MRGDV_INPUT_FILE_NAME: str = "mrgdv.in"
 ANADDB_INPUT_FILE_NAME: str = "anaddb.in"
 MPIABORTFILE = "__ABI_MPIABORTFILE__"
 DUMMY_FILENAME = "__DUMMY__"
@@ -462,3 +463,28 @@ def get_mrgddb_report(
     with open(str(logfile)) as f:
         last_line = f.readlines()[-1]
     return {"run_completed": "completed successfully" in last_line}
+
+
+def get_mrgdv_report(
+    logfile: str | Path,
+) -> dict:
+    """Get report from mrgdv.
+
+    This returns a dict with a "run_completed" key that is True
+    if "completed successfully" is present in the log.
+
+    Parameters
+    ----------
+    logfile : File
+        Output file to be parsed. Should be either the log file (stdout).
+
+    Returns
+    -------
+    dict
+        dict with bool "run_completed" key.
+    """
+    if not Path(logfile).exists:
+        return {"run_completed": False}
+    with open(str(logfile)) as f:
+        last_line = f.readlines()[-1]
+    return {"run_completed": "Done" in last_line}

@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import logging
+import tempfile
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar
 
+import numpy as np
 from abipy.flowtk.events import (
     AbinitCriticalWarning,
     NscfConvergenceWarning,
     RelaxConvergenceWarning,
     ScfConvergenceWarning,
 )
+from jobflow import Response, job
 
+from atomate2.abinit.files import load_abinit_input, write_abinit_input_set
 from atomate2.abinit.jobs.base import BaseAbinitMaker, abinit_job
 from atomate2.abinit.sets.core import (
     LineNonSCFSetGenerator,
@@ -22,9 +26,11 @@ from atomate2.abinit.sets.core import (
     StaticSetGenerator,
     UniformNonSCFSetGenerator,
 )
+from atomate2.abinit.utils.history import JobHistory
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from pathlib import Path
 
     from jobflow import Job
     from pymatgen.core.structure import Structure
@@ -54,6 +60,67 @@ class StaticMaker(BaseAbinitMaker):
     CRITICAL_EVENTS: ClassVar[Sequence[AbinitCriticalWarning]] = (
         ScfConvergenceWarning,
     )
+
+
+@dataclass
+class StaticMakerforPhonons(StaticMaker):
+    """
+    Maker to create ABINIT scf jobs for phonons.
+
+    The make method is modified in order to stop a gs calculation
+    if the q-points are not commensurate with the k-points.
+
+    Parameters
+    ----------
+    name : str
+        The job name.
+    """
+
+    @job
+    def validate_grids(
+        self,
+        structure: Structure | None,
+        ngqpt: list[int] | None = None,
+        prev_outputs: str | Path | list[str] | None = None,
+        restart_from: str | Path | list[str] | None = None,
+        history: JobHistory | None = None,
+    ) -> dict[str, dict]:
+        """
+        Validate the q-point grid for the phonon calculation.
+
+        If the q- and k-grids are commensurate the method returns
+        a static job maker, otherwise it raises a ValueError.
+
+        Parameters
+        ----------
+        structure : Structure
+            A pymatgen structure object.
+        ngqpt : list
+            q-point grid for phonon calculation.
+        shiftq : list
+            Shifts for the q-point grid.
+        qptopt : int
+            Option for the q-point grid.
+        qpt_list : list
+            List of q-points for the phonon calculation.
+        """
+        with tempfile.TemporaryDirectory(dir=".") as temp_dir:
+            write_abinit_input_set(
+                structure=structure,
+                input_set_generator=self.input_set_generator,
+                directory=temp_dir,
+            )
+            ai = load_abinit_input(temp_dir)
+            if np.any(np.array(ai["ngkpt"]) % np.array(ngqpt) != np.array([0, 0, 0])):
+                raise ValueError("q-points are not commensurate with k-points")
+        self.name = "SCF Calculation for Phonons"
+        static_job = self.make(
+            structure=structure,
+            prev_outputs=prev_outputs,
+            restart_from=restart_from,
+            history=history,
+        )
+        return Response(replace=static_job, output=static_job.output)
 
 
 @dataclass

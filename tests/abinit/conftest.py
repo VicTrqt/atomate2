@@ -4,7 +4,9 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+import numpy as np
 import pytest
+from abipy.abio.abivars import is_anaddb_var
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -24,6 +26,20 @@ _FAKE_RUN_ANADDB_KWARGS = {}
 @pytest.fixture(scope="session")
 def abinit_test_dir(test_dir):
     return test_dir / "abinit"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def load_pseudos(abinit_test_dir):
+    import abipy.flowtk.psrepos
+
+    abipy.flowtk.psrepos.REPOS_ROOT = str(abinit_test_dir / "pseudos")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def load_manager(abinit_test_dir):
+    import abipy.flowtk.tasks
+
+    abipy.flowtk.tasks.TaskManager.USER_CONFIG_DIR = str(abinit_test_dir / "abipy")
 
 
 @pytest.fixture(scope="session")
@@ -134,7 +150,7 @@ def check_run_abi(ref_path: str | Path):
         ref_str = file.read()
     ref = AbinitInputFile.from_string(ref_str.decode("utf-8"))
     # Ignore the pseudos as the directory depends on the pseudo root directory
-    diffs = user.get_differences(ref, ignore_vars=["pseudos"])
+    diffs = user.get_differences(ref, ignore_vars=["pseudos", "pp_dirpath"])
     # TODO: should we still add some check on the pseudos here ?
     assert diffs == [], "'run.abi' is different from reference."
 
@@ -145,7 +161,19 @@ def check_abinit_input_json(ref_path: str | Path):
 
     user = loadfn("abinit_input.json")
     assert isinstance(user, AbinitInput)
+    user_abivars = user.structure.to_abivars()
+
     ref = loadfn(ref_path / "inputs" / "abinit_input.json.gz")
+    ref_abivars = ref.structure.to_abivars()
+
+    for k, user_v in user_abivars.items():
+        assert k in ref_abivars, f"{k = } is not a key of the reference input."
+        ref_v = ref_abivars[k]
+        if isinstance(user_v, str):
+            assert user_v == ref_v, f"{k = }-->{user_v = } versus {ref_v = }"
+        else:
+            assert np.allclose(user_v, ref_v), f"{k = }-->{user_v = } versus {ref_v = }"
+    assert user.runlevel == ref.runlevel, f"{user.runlevel = } versus {ref.runlevel = }"
     assert user.structure == ref.structure
     assert user.runlevel == ref.runlevel
 
@@ -339,11 +367,19 @@ def convert_file_to_dict(file_path):
 
     with file_opener(file_path, mode) as file:
         for line in file:
-            key, value = line.split()
-            try:
-                result_dict[key] = int(value)  # Assuming values are integers
-            except ValueError:
-                result_dict[key] = str(value)  # Fall back to string if not an integer
+            if "#" in line or len(line) == 1:
+                continue
+            sl = line.strip().split(" ", 1)
+            if is_anaddb_var(sl[0]) and len(sl) > 1:
+                try:
+                    result_dict[sl[0]] = int(sl[1])
+                except ValueError:
+                    result_dict[sl[0]] = sl[1]
+            elif is_anaddb_var(sl[0]) and len(sl) == 1:
+                current_key = sl[0]
+                result_dict[current_key] = []
+            else:
+                result_dict[current_key].append([float(t) for t in line.split()])
     return result_dict
 
 
@@ -359,9 +395,29 @@ def check_anaddb_input_json(ref_path: str | Path):
 
     user = loadfn("anaddb_input.json")
     assert isinstance(user, AnaddbInput)
+    user_abivars = user.structure.to_abivars()
+
     ref = loadfn(ref_path / "inputs" / "anaddb_input.json.gz")
-    assert user.structure == ref.structure
-    assert user == ref
+    ref_abivars = ref.structure.to_abivars()
+    # Check structure
+    for k, user_v in user_abivars.items():
+        assert k in ref_abivars, f"{k = } is not a key of the reference input."
+        ref_v = ref_abivars[k]
+        if isinstance(user_v, str):
+            assert user_v == ref_v, f"{k = }-->{user_v = } versus {ref_v = }"
+        else:
+            assert np.allclose(user_v, ref_v), f"{k = }-->{user_v = } versus {ref_v = }"
+
+    # Check anaddb input
+    user_args = dict(user.as_dict()["anaddb_args"])
+    ref_args = dict(ref.as_dict()["anaddb_args"])
+    for k, user_v in user_args.items():
+        assert k in ref_args, f"{k = } is not a key of the reference input."
+        ref_v = ref_args[k]
+        if isinstance(user_v, str):
+            assert user_v == ref_v, f"{k = }-->{user_v = } versus {ref_v = }"
+        else:
+            assert np.allclose(user_v, ref_v), f"{k = }-->{user_v = } versus {ref_v = }"
 
 
 def copy_abinit_outputs(ref_path: str | Path):

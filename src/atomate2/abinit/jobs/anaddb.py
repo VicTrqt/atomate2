@@ -14,12 +14,16 @@ from atomate2.abinit.files import write_anaddb_input_set
 from atomate2.abinit.jobs.base import setup_job
 from atomate2.abinit.run import run_anaddb
 from atomate2.abinit.schemas.anaddb import AnaddbTaskDoc
+from atomate2.abinit.schemas.outfiles import AbinitStoredFile
 from atomate2.abinit.sets.anaddb import (
     AnaddbDfptDteInputGenerator,
     AnaddbInputGenerator,
+    AnaddbPhbandsDOSInputGenerator,
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from pymatgen.core.structure import Structure
 
     from atomate2.abinit.utils.history import JobHistory
@@ -27,6 +31,46 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 __all__ = ["AnaddbDfptDteMaker", "AnaddbMaker"]
+
+
+_DATA_OBJECTS = [
+    AbinitStoredFile,
+]
+
+
+def anaddb_job(method: Callable) -> job:
+    """
+    Decorate the ``make`` method of ANADDB job makers.
+
+    This is a thin wrapper around :obj:`~jobflow.core.job.job` that configures common
+    settings for all anaddb jobs. For example, it ensures that large data objects
+    (band structures, density of states, DDB, etc) are all stored in the
+    atomate2 data store. It also configures the output schema to be an Abinit
+    :obj:`.TaskDocument`.
+
+    Any makers that return Anaddb jobs (not flows) should decorate the ``make`` method
+    with @anaddb_job. For example:
+
+    .. code-block:: python
+
+        class MyAnaddbMaker(AnaddbMaker):
+            @anaddb_job
+            def make(structure):
+                # code to run abinit job.
+                pass
+
+    Parameters
+    ----------
+    method : callable
+        A AnaddbMaker.make method. This should not be specified directly and is
+        implied by the decorator.
+
+    Returns
+    -------
+    callable
+        A decorated version of the make function that will generate Anaddb jobs.
+    """
+    return job(method, data=_DATA_OBJECTS, output_schema=AnaddbTaskDoc)
 
 
 @dataclass
@@ -44,18 +88,21 @@ class AnaddbMaker(Maker):
         default_factory=AnaddbInputGenerator
     )
     wall_time: int | None = None
+    factory_kwargs: dict = field(default_factory=dict)
+    task_document_kwargs: dict = field(default_factory=dict)
 
     @property
     def calc_type(self) -> str:
         """Get the type of calculation for this maker."""
         return self.input_set_generator.calc_type
 
-    @job(output_schema=AnaddbTaskDoc)
+    @anaddb_job
     def make(
         self,
         structure: Structure,
         prev_outputs: str | list[str] | None = None,
         history: JobHistory | None = None,
+        **anaddb_factory_kwargs,
     ) -> jobflow.Response:
         """
         Return an AnaDDB jobflow.Job.
@@ -66,6 +113,8 @@ class AnaddbMaker(Maker):
         history : JobHistory
             A JobHistory object containing the history of this job.
         """
+        self.input_set_generator.factory_kwargs = anaddb_factory_kwargs
+
         # Setup job and get general job configuration
         config = setup_job(
             structure=None,
@@ -92,7 +141,7 @@ class AnaddbMaker(Maker):
         # parse Anaddb DDB output
         task_doc = AnaddbTaskDoc.from_directory(
             Path.cwd(),
-            # **self.task_document_kwargs,
+            **self.task_document_kwargs,
         )
         task_doc.task_label = self.name
 
@@ -112,4 +161,23 @@ class AnaddbDfptDteMaker(AnaddbMaker):
     name: str = "Anaddb"
     input_set_generator: AnaddbInputGenerator = field(
         default_factory=AnaddbDfptDteInputGenerator
+    )
+
+
+@dataclass
+class AnaddbPhBandsDOSMaker(AnaddbMaker):
+    """Maker to compute phonon bands and DOS from a merged DDB file.
+
+    Parameters
+    ----------
+    name : str
+        The job name.
+    """
+
+    name: str = "Anaddb PhbandsDOS"
+    input_set_generator: AnaddbInputGenerator = field(
+        default_factory=AnaddbPhbandsDOSInputGenerator
+    )
+    task_document_kwargs: dict = field(
+        default_factory=lambda: {"files_to_store": ["PHBST", "PHDOS"]}
     )

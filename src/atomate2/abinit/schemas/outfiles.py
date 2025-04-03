@@ -45,7 +45,7 @@ class AbinitStoredFile(MSONable):
     def from_file(cls, filepath: Union[str, Path], data_type: Union[str, type]) -> Self:
         """Create an AbinitStoredFile from the original file."""
         source_filepath = os.path.abspath(filepath)
-        if data_type in {"bytes", bytes}:
+        if data_type in {"bytes", bytes} or ".nc" in str(filepath):
             read_type = "rb"
         elif data_type in {"str", str}:
             read_type = "r"

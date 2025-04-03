@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from atomate2.abinit.sets.anaddb import AnaddbInputGenerator
     from atomate2.abinit.sets.base import AbinitInputGenerator
     from atomate2.abinit.sets.mrgddb import MrgddbInputGenerator
+    from atomate2.abinit.sets.mrgdvdb import MrgdvInputGenerator
 
 __all__ = [
     "del_gzip_files",
@@ -36,6 +37,7 @@ __all__ = [
     "write_abinit_input_set",
     "write_anaddb_input_set",
     "write_mrgddb_input_set",
+    "write_mrgdv_input_set",
 ]
 
 logger = logging.getLogger(__name__)
@@ -184,6 +186,35 @@ def write_mrgddb_input_set(
     if not mrgis.validate():
         raise RuntimeError(
             "MrgddbInputSet is not valid. Some previous outputs \
+        do not exist."
+        )
+
+    mrgis.write_input(directory=directory, make_dir=True, overwrite=False)
+
+
+def write_mrgdv_input_set(
+    input_set_generator: MrgdvInputGenerator,
+    prev_outputs: str | Path | list[str] | None = None,
+    directory: str | Path = ".",
+) -> None:
+    """Write the mrgdv input using a given generator.
+
+    Parameters
+    ----------
+    input_set_generator
+        The input generator used to write the mrgddb inputs.
+    prev_outputs
+        The list of previous directories needed for the calculation.
+    directory
+        Directory in which to write the abinit inputs.
+    """
+    mrgis = input_set_generator.get_input_set(
+        prev_outputs=prev_outputs,
+        workdir=directory,
+    )
+    if not mrgis.validate():
+        raise RuntimeError(
+            "MrgdvInputSet is not valid. Some previous outputs \
         do not exist."
         )
 

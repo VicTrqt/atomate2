@@ -47,6 +47,8 @@ class AbinitObject(ValueEnum):
     TRAJECTORY = "trajectory"
     DDBFILE = "ddb"  # DDB file as string
     POTENTIAL = "potential"  # POT file as b-string
+    PHBSTFILE = "phbst"  # Phonon Bandstructure file
+    PHDOSFILE = "phdos"  # Phonon DOS file
 
 
 class CalculationOutput(BaseModel):

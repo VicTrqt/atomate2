@@ -9,6 +9,7 @@ from abipy.abio.factories import (
     ddepert_from_gsinput,
     ddkpert_from_gsinput,
     dtepert_from_gsinput,
+    phononpert_from_gsinput,
 )
 from abipy.abio.input_tags import DDE, DDK, DTE, SCF
 
@@ -23,6 +24,7 @@ __all__ = [
     "DdeSetGenerator",
     "DdkSetGenerator",
     "DteSetGenerator",
+    "PhononSetGenerator",
 ]
 
 
@@ -62,6 +64,20 @@ class DteSetGenerator(StaticSetGenerator):
     factory: Callable = dtepert_from_gsinput
     pseudos: str | list[str] | PseudoTable | None = None
     restart_from_deps: tuple = (f"{DTE}:1WF|1DEN",)
+    prev_outputs_deps: tuple = (f"{SCF}:WFK", f"{DDE}:1WF", f"{DDE}:1DEN")
+    factory_prev_inputs_kwargs: dict | None = field(
+        default_factory=lambda: {"gs_input": (SCF,)}
+    )
+
+
+@dataclass
+class PhononSetGenerator(StaticSetGenerator):
+    """Class to generate Abinit Phonon input sets."""
+
+    calc_type: str = "Phonon"
+    factory: Callable = phononpert_from_gsinput
+    pseudos: str | list[str] | PseudoTable | None = None
+    restart_from_deps: tuple = (f"{SCF}:WFK",)
     prev_outputs_deps: tuple = (f"{SCF}:WFK", f"{DDE}:1WF", f"{DDE}:1DEN")
     factory_prev_inputs_kwargs: dict | None = field(
         default_factory=lambda: {"gs_input": (SCF,)}

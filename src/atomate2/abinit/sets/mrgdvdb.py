@@ -1,4 +1,4 @@
-"""Module defining base mrgddb input set and generator."""
+"""Module defining base MRGDVDB input set and generator."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from pymatgen.io.core import InputSet
 from atomate2.abinit.sets.base import AbinitMixinInputGenerator
 from atomate2.abinit.utils.common import (
     INDIR_NAME,
-    MRGDDB_INPUT_FILE_NAME,
+    MRGDV_INPUT_FILE_NAME,
     OUTDIR_NAME,
     TMPDIR_NAME,
 )
@@ -25,32 +25,32 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
     from pathlib import Path
 
-__all__ = ["MrgddbInputGenerator", "MrgddbInputSet"]
+__all__ = ["MrgdvInputGenerator", "MrgdvInputSet"]
 
 logger = logging.getLogger(__name__)
 
 
-class MrgddbInputSet(InputSet):
+class MrgdvInputSet(InputSet):
     """
-    A class to represent a set of Mrgddb inputs.
+    A class to represent a set of Mrgdv inputs.
 
     Parameters
     ----------
-    mrgddb_input
-        An input (str) to mrgddb.
+    mrgdv_input
+        An input (str) to mrgdv.
     input_files
         A list of input files needed for the calculation.
     """
 
     def __init__(
         self,
-        mrgddb_input: str = None,
+        mrgdv_input: str = None,
         input_files: Iterable[tuple[str, str]] | None = None,
     ) -> None:
         self.input_files = input_files
         super().__init__(
             inputs={
-                MRGDDB_INPUT_FILE_NAME: mrgddb_input,
+                MRGDV_INPUT_FILE_NAME: mrgdv_input,
             }
         )
 
@@ -61,7 +61,7 @@ class MrgddbInputSet(InputSet):
         overwrite: bool = True,
         zip_inputs: bool = False,
     ) -> None:
-        """Write Mrgddb input file to a directory."""
+        """Write Mrgdv input file to a directory."""
         # TODO: do we allow zipping ? not sure if it really makes sense for abinit as
         #  the abinit input set also sets up links to previous files, sets up the
         #  indir, outdir and tmpdir, ...
@@ -76,19 +76,19 @@ class MrgddbInputSet(InputSet):
     def validate(self) -> bool:
         """Validate the input set.
 
-        Check that all input files exist and are DDB files.
+        Check that all input files exist and are dv files.
         """
         if not self.input_files:
             return False
         for _out_filepath, in_file in self.input_files:
-            if not os.path.isfile(_out_filepath) or in_file != "in_DDB":
+            if not os.path.isfile(_out_filepath) or not in_file.startswith("in_POT"):
                 return False
         return True
 
     @property
-    def mrgddb_input(self) -> str:
-        """Get the Mrgddb input (str)."""
-        return self[MRGDDB_INPUT_FILE_NAME]
+    def mrgdv_input(self) -> str:
+        """Get the Mrgdv input (str)."""
+        return self[MRGDV_INPUT_FILE_NAME]
 
     @staticmethod
     def set_workdir(workdir: Path | str) -> tuple[Directory, Directory, Directory]:
@@ -110,15 +110,15 @@ class MrgddbInputSet(InputSet):
 
         return indir, outdir, tmpdir
 
-    def deepcopy(self) -> MrgddbInputSet:
+    def deepcopy(self) -> MrgdvInputSet:
         """Deep copy of the input set."""
         return copy.deepcopy(self)
 
 
 @dataclass
-class MrgddbInputGenerator(AbinitMixinInputGenerator):
+class MrgdvInputGenerator(AbinitMixinInputGenerator):
     """
-    A class to generate Mrgddb input sets.
+    A class to generate Mrgdv input sets.
 
     Parameters
     ----------
@@ -134,15 +134,15 @@ class MrgddbInputGenerator(AbinitMixinInputGenerator):
         be linked. An example is (f"{NSCF}:WFK",).
     """
 
-    calc_type: str = "mrgddb"
-    prev_outputs_deps: tuple = (f"{DDE}:DDB", f"{DTE}:DDB", f"{PH_Q_PERT}:DDB")
+    calc_type: str = "mrgdv"
+    prev_outputs_deps: tuple = (f"{DDE}:POT", f"{DTE}:POT", f"{PH_Q_PERT}:POT")
 
     def get_input_set(
         self,
         prev_outputs: str | tuple | list | Path | None = None,
         workdir: str | Path | None = ".",
-    ) -> MrgddbInputSet:
-        """Generate an MrgddbInputSet object.
+    ) -> MrgdvInputSet:
+        """Generate an MrgdvInputSet object.
 
         Here we assume that prev_outputs is
         a list of directories.
@@ -151,7 +151,7 @@ class MrgddbInputGenerator(AbinitMixinInputGenerator):
         ----------
         prev_outputs : str or Path or list or tuple
             Directory (as a str or Path) or list/tuple of directories (as a str
-            or Path) needed as dependencies for the MrgddbInputSet generated.
+            or Path) needed as dependencies for the MrgdvInputSet generated.
         """
         prev_outputs = self.check_format_prev_dirs(prev_outputs)
 
@@ -162,23 +162,23 @@ class MrgddbInputGenerator(AbinitMixinInputGenerator):
             )
         irdvars, files = self.resolve_deps(prev_outputs, self.prev_outputs_deps)
         input_files.extend(files)
-        mrgddb_input = self.get_mrgddb_input(
+        mrgdv_input = self.get_mrgdv_input(
             prev_outputs=prev_outputs,
             workdir=workdir,
         )
 
-        return MrgddbInputSet(
-            mrgddb_input=mrgddb_input,
+        return MrgdvInputSet(
+            mrgdv_input=mrgdv_input,
             input_files=input_files,
         )
 
-    def get_mrgddb_input(
+    def get_mrgdv_input(
         self,
         prev_outputs: list[str] | None = None,
         workdir: str | Path | None = ".",
     ) -> str:
         """
-        Generate the mrgddb input (str) for the input set.
+        Generate the mrgdv input (str) for the input set.
 
         Parameters
         ----------
@@ -205,11 +205,11 @@ class MrgddbInputGenerator(AbinitMixinInputGenerator):
         irdvars, files = self.resolve_deps(prev_outputs, self.prev_outputs_deps)
 
         workdir = os.path.abspath(workdir)
-        outdir = Directory(os.path.join(workdir, OUTDIR_NAME, "out_DDB"))
+        outdir = Directory(os.path.join(workdir, OUTDIR_NAME, "out_dvdb"))
 
         generated_input = str(outdir)
         generated_input += "\n"
-        generated_input += f"DDBs merged on {time.asctime()}"
+        generated_input += f"dvdbs merged on {time.asctime()}"
         generated_input += "\n"
         generated_input += f"{len(files)}"
         for file_path, _ in files:
