@@ -363,6 +363,8 @@ def anaddbinp_phbands_dos(
     ----------
     structure
         A structure.
+    kwargs
+        A dictionary with anaddb keywords.
 
     Returns
     -------
@@ -381,6 +383,8 @@ class AnaddbPhbandsDOSInputGenerator(AnaddbInputGenerator):
     ----------
     factory
         A callable to generate the AnaddbInput for phonon bands and DOS.
+    factory_kwargs
+        A dictionary with factory keywords.
 
     Returns
     -------

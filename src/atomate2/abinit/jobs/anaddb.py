@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["AnaddbDfptDteMaker", "AnaddbMaker"]
+__all__ = ["AnaddbDfptDteMaker", "AnaddbMaker", "AnaddbPhBandsDOSMaker", "anaddb_job"]
 
 
 _DATA_OBJECTS = [

@@ -269,7 +269,7 @@ def generate_phonon_perts(
     gsinput: AbinitInput,
     ngqpt: list | tuple | None = None,
     qptopt: int | None = 1,
-    qpt_list: list | None = None,
+    qpt_list: list[list] | None = None,
     with_wfq: bool = False,
 ) -> dict[str, list[Any] | tuple[Any, ...] | Any]:
     """
@@ -279,8 +279,23 @@ def generate_phonon_perts(
     ----------
     gsinput : an |AbinitInput| representing a ground state calculation,
         likely the SCF performed to get the WFK.
-    qpt: list or tuple
+    ngqpt : list or tuple
+        Monkhorst-Pack divisions for the phonon q-mesh.
+        Default is the same as the one used in the GS calculation.
+        Must be a sub-mesh of the k-mesh used for electrons.
+    qptopt : int
+        Option for the q-point generation.
+    qpt_list: list
         q-point for the phonon calculations.
+    wfq_maker: bool
+        True if a wfq_maker is provided for k+q computations.
+        Not yet implemented, so default is False.
+
+    Returns
+    -------
+    dict
+        A dictionary with the perturbations, the ngqpt and the
+        output directory name.
     """
     gsinput = gsinput.deepcopy()
     gsinput.pop_vars(["autoparal"])
@@ -290,7 +305,9 @@ def generate_phonon_perts(
             ngkpt=ngqpt, shiftk=[0, 0, 0], kptopt=qptopt
         ).points
         outputs["ngqpt"] = ngqpt if ngqpt else gsinput["ngkpt"]
-
+    else:
+        outputs["ngqpt"] = [1, 1, 1]
+    qpt_list = [qpt_list] if isinstance(qpt_list[0], int | float) else qpt_list
     perturbations = list()
     outdirs = list()
     for q in qpt_list:
@@ -306,7 +323,6 @@ def generate_phonon_perts(
     outputs["dir_name"] = list(np.hstack(outdirs))
     if np.any(np.array(gsinput["ngkpt"]) % np.array(outputs["ngqpt"])) and not with_wfq:
         raise ValueError("q-points are not commensurate with k-points.")
-
     return outputs
 
 
@@ -315,7 +331,6 @@ def run_rf(
     perturbations: list[dict],
     rf_maker: ResponseMaker,
     prev_outputs: str | list[str] | None = None,
-    with_dde: bool = False,
 ) -> Flow:
     """
     Run the RF calculations.
@@ -337,16 +352,9 @@ def run_rf(
         prev_outputs = list(np.hstack(prev_outputs))
 
     for ipert, pert in enumerate(perturbations):
-        is_gamma = np.allclose(pert["qpt"], [0.0, 0.0, 0.0]) if "qpt" in pert else True
-
-        prev_out = (
-            [prev_outputs[0]]
-            if is_phonon and with_dde and not is_gamma
-            else prev_outputs
-        )
         rf_job = rf_maker.make(
             perturbation=pert,
-            prev_outputs=prev_out,
+            prev_outputs=prev_outputs,
         )
 
         if is_phonon:

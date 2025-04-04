@@ -58,10 +58,15 @@ class DfptFlowMaker(Maker):
         The maker to use for the DDE calculations.
     dte_maker : .BaseAbinitMaker
         The maker to use for the DTE calculations.
+    wfq_maker : .BaseAbinitMaker
+        The maeker to use to compute the k+q WFs.
+        Not implemented yet.
     phonon_maker : .BaseAbinitMaker
         The maker to use for the phonon calculations.
     mrgddb_maker : .Maker
         The maker to merge the DDBs.
+    mrgdv_maker : .Maker
+        The maker to merge the POT files.
     anaddb_maker : .Maker
         The maker to analyze the DDBs.
     use_dde_sym : bool
@@ -99,7 +104,7 @@ class DfptFlowMaker(Maker):
     anaddb_maker: Maker | None = field(default_factory=AnaddbMaker)  # |
     use_dde_sym: bool = True
     dte_skip_permutations: bool | None = False
-    qpt_list: list | None = None
+    qpt_list: list[list] | None = None
     ngqpt: list | None = None
     qptopt: int = None
 
@@ -144,6 +149,8 @@ class DfptFlowMaker(Maker):
             A pymatgen structure object.
         restart_from : str or Path or None
             One previous directory to restart from.
+        anaddb_kwargs : dict
+            Additional kwargs for the anaddb maker.
 
         Returns
         -------
@@ -156,6 +163,9 @@ class DfptFlowMaker(Maker):
             and not self.wfq_maker
             and self.ngqpt
         ):
+            """A check on the q-mesh is performed in order to avoid gs computations
+            if q and k grids are not commensurate."""
+
             static_job = self.static_maker.validate_grids(
                 structure, ngqpt=self.ngqpt, restart_from=restart_from
             )
@@ -229,11 +239,10 @@ class DfptFlowMaker(Maker):
             jobs.append(dte_calcs)
 
         if self.phonon_maker:
-            # generate the perturbations for the phonon calculations
             prev_outputs = [static_job.output.dir_name]
-            if self.dde_maker:
-                prev_outputs.append(dde_calcs.output["dirs"])
-
+            # if self.dde_maker:
+            #    prev_outputs.append(dde_calcs.output["dirs"])
+            # generation of qpt_list (if needed) and corresponding perturbations
             phonon_perts_qpt_list = generate_phonon_perts(
                 gsinput=static_job.output.input.abinit_input,
                 ngqpt=self.ngqpt,
@@ -241,7 +250,7 @@ class DfptFlowMaker(Maker):
                 qpt_list=self.qpt_list,
             )
             jobs.append(phonon_perts_qpt_list)
-
+            # perform the phonon calculations
             phonon_calcs = run_rf(
                 perturbations=phonon_perts_qpt_list.output["perts"],
                 rf_maker=self.phonon_maker,
@@ -251,7 +260,7 @@ class DfptFlowMaker(Maker):
             jobs.append(phonon_calcs)
 
         if self.mrgddb_maker:
-            # merge the DDE and DTE DDB.
+            # merge the DDE, DTE and Phonon DDB.
             prev_outputs = []
             if self.dde_maker:
                 prev_outputs.append(dde_calcs.output["dirs"])
@@ -267,6 +276,7 @@ class DfptFlowMaker(Maker):
             jobs.append(mrgddb_job)
 
         if self.mrgdv_maker:
+            # merge the DDE and Phonon POT files.
             prev_outputs = []
             if self.dde_maker:
                 prev_outputs.append(dde_calcs.output["dirs"])
@@ -281,6 +291,7 @@ class DfptFlowMaker(Maker):
         if self.anaddb_maker:
             # analyze a merged DDB.
             if self.phonon_maker:
+                # set the required args for the anaddb phbstdos input
                 if anaddb_kwargs:
                     anaddb_kwargs.update(
                         {"ngqpt": phonon_perts_qpt_list.output["ngqpt"]}
@@ -288,6 +299,7 @@ class DfptFlowMaker(Maker):
                 else:
                     anaddb_kwargs = {"ngqpt": phonon_perts_qpt_list.output["ngqpt"]}
                 anaddb_kwargs.setdefault("nqsmall", 10)
+                # ifc needed to create the phonopy like outdoc, user can turn it off
                 anaddb_kwargs.setdefault("with_ifc", True)
 
             anaddb_job = self.anaddb_maker.make(
@@ -298,11 +310,6 @@ class DfptFlowMaker(Maker):
 
             jobs.append(anaddb_job)
 
-        # TODO: implement the possibility of other DFPT WFs (phonons,...)
-        # if self.wfq_maker:
-        #     ...
-
-        # return Flow(jobs, output=jobs[-1].output, name=self.name)  # TODO: fix outputs
         return Flow(
             jobs, output=[j.output for j in jobs], name=self.name
         )  # TODO: fix outputs
@@ -379,6 +386,10 @@ class PhononMaker(DfptFlowMaker):
         True if the DDE calculations should be included, False otherwise.
     run_anaddb : bool
         True if the anaddb calculations should be included, False otherwise.
+    run_mrgddb : bool
+        True if the merge of DDB files should be included, False otherwise.
+    run_mrgdv : bool
+        True if the merge of POT files should be included, False otherwise.
     """
 
     name: str = "Phbands-PhDOS Flow"

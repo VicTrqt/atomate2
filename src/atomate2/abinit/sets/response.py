@@ -78,7 +78,7 @@ class PhononSetGenerator(StaticSetGenerator):
     factory: Callable = phononpert_from_gsinput
     pseudos: str | list[str] | PseudoTable | None = None
     restart_from_deps: tuple = (f"{SCF}:WFK",)
-    prev_outputs_deps: tuple = (f"{SCF}:WFK", f"{DDE}:1WF", f"{DDE}:1DEN")
+    prev_outputs_deps: tuple = (f"{SCF}:WFK",)
     factory_prev_inputs_kwargs: dict | None = field(
         default_factory=lambda: {"gs_input": (SCF,)}
     )

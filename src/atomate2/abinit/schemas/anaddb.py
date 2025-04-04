@@ -366,14 +366,18 @@ class Calculation(BaseModel):
             abinit_anaddb = AnaddbNcFile.from_file(abinit_anaddb_file)
         if abinit_phbst_file.exists():
             abinit_phbst = PhononBands.from_file(abinit_phbst_file)
+        else:
+            abinit_phbst = None
         if abinit_phdos_file.exists():
             abinit_phdos = PhononDos.as_phdos(str(abinit_phdos_file))
+        else:
+            abinit_phdos = None
         if abinit_anaddb_file.exists():
             output_doc = CalculationOutput.from_abinit_anaddb(
                 dir_name=dir_name,
                 output=abinit_anaddb,
-                output_phbands=abinit_phbst if abinit_phbst else None,
-                output_phdos=abinit_phdos if abinit_phdos else None,
+                output_phbands=abinit_phbst,
+                output_phdos=abinit_phdos,
             )
 
             completed_at = str(
@@ -426,6 +430,52 @@ class OutputDoc(BaseModel):
         The conventional static SHG tensor in pm/V (Chi^(2)/2)
     epsinf: list (3x3)
         The electronic contribution to the dielectric tensor
+    phonon_bandstructure: PhononBandStructureSymmLine
+        The phonon band structure object.
+    phonon_dos: PhononDos
+        The phonon density of states object.
+    free_energies: list
+        The vibrational part of the free energies in J/mol per
+        formula unit for temperatures in temperature_list
+    heat_capacities: list
+        The heat capacities in J/K/mol per
+        formula unit for temperatures in temperature_list
+    internal_energies: list
+        The internal energies in J/mol per
+        formula unit for temperatures in temperature_list
+    entropies: list
+        The entropies in J/(K*mol) per formula unit
+        for temperatures in temperature_list
+    temperatures: list
+        The temperatures at which the vibrational
+        part of the free energies and other properties have been computed
+    total_dft_energy: float
+        The total DFT energy per formula unit in eV
+    volume_per_formula_unit: float
+        The volume per formula unit in Angstrom**3
+    formula_units: int
+        The number of formula units per cell
+    has_imaginary_modes: bool
+        Whether the structure has imaginary modes
+    force_constants: ForceConstants
+        The force constants between every pair of atoms in the structure
+    born: list
+        The Born charges as computed from phonopy. Only for symmetrically
+        different atoms
+    epsilon_static: Matrix3D
+        The high-frequency dielectric constant
+    supercell_matrix: Matrix3D
+        The matrix describing the supercell
+    primitive_matrix: Matrix3D
+        The matrix describing the relationship to the primitive cell
+    code: str
+        The code for the computation
+    phonopy_settings: PhononComputationalSettings
+        The settings for Phonopy
+    thermal_displacement_data: ThermalDisplacementData
+        The data of the computation of the thermal displacements
+    jobdirs: PhononJobDirs
+        The job directories
     """
 
     structure: Union[Structure] = Field(

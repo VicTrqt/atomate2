@@ -67,8 +67,12 @@ class StaticMakerforPhonons(StaticMaker):
     """
     Maker to create ABINIT scf jobs for phonons.
 
-    The make method is modified in order to stop a gs calculation
-    if the q-points are not commensurate with the k-points.
+    Based on the StaticMaker class, the method validate_grids
+    checks if the q-point grid is commensurate with the k-point grid.
+    If they are commensurate, it returns a static job maker.
+    Otherwise, it raises a ValueError.
+    This is performed to avoid running gs computations when we know the
+    phonon calculation will fail.
 
     Parameters
     ----------
@@ -97,12 +101,11 @@ class StaticMakerforPhonons(StaticMaker):
             A pymatgen structure object.
         ngqpt : list
             q-point grid for phonon calculation.
-        shiftq : list
-            Shifts for the q-point grid.
-        qptopt : int
-            Option for the q-point grid.
-        qpt_list : list
-            List of q-points for the phonon calculation.
+
+        Returns
+        -------
+        job
+            A job object with the static job maker.
         """
         with tempfile.TemporaryDirectory(dir=".") as temp_dir:
             write_abinit_input_set(
