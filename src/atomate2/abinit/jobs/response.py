@@ -321,7 +321,7 @@ def generate_phonon_perts(
         # and the last if removed
     outputs["perts"] = list(np.hstack(perturbations))
     outputs["dir_name"] = list(np.hstack(outdirs))
-    if np.any(np.array(gsinput["ngkpt"]) % np.array(outputs["ngqpt"])) and not with_wfq:
+    if any(np.array(gsinput["ngkpt"]) % np.array(outputs["ngqpt"])) and not with_wfq:
         raise ValueError("q-points are not commensurate with k-points.")
     return outputs
 
