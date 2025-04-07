@@ -476,7 +476,7 @@ def get_mrgdv_report(
     Parameters
     ----------
     logfile : File
-        Output file to be parsed. Should be either the log file (stdout).
+        Logfile file to be parsed.
 
     Returns
     -------

@@ -96,11 +96,9 @@ class DfptFlowMaker(Maker):
     dde_maker: BaseAbinitMaker | None = field(default_factory=DdeMaker)  # |
     dte_maker: BaseAbinitMaker | None = field(default_factory=DteMaker)  # |
     wfq_maker: BaseAbinitMaker | None = None  # | not implemented
-    phonon_maker: BaseAbinitMaker | None = field(
-        default_factory=PhononResponseMaker
-    )  # |
+    phonon_maker: BaseAbinitMaker | None = None  # |
     mrgddb_maker: Maker | None = field(default_factory=MrgddbMaker)  # |
-    mrgdv_maker: Maker | None = field(default_factory=MrgdvMaker)  # |
+    mrgdv_maker: Maker | None = None  # |
     anaddb_maker: Maker | None = field(default_factory=AnaddbMaker)  # |
     use_dde_sym: bool = True
     dte_skip_permutations: bool | None = False
@@ -330,8 +328,6 @@ class ShgFlowMaker(DfptFlowMaker):
 
     name: str = "DFPT Chi2 SHG"
     anaddb_maker: Maker | None = field(default_factory=AnaddbDfptDteMaker)
-    phonon_maker: Maker | None = None
-    mrgdv_maker: Maker | None = None
     use_dde_sym: bool = False
     static_maker: BaseAbinitMaker = field(
         default_factory=lambda: StaticMaker(input_set_generator=ShgStaticSetGenerator())
@@ -392,7 +388,7 @@ class PhononMaker(DfptFlowMaker):
         True if the merge of POT files should be included, False otherwise.
     """
 
-    name: str = "Phbands-PhDOS Flow"
+    name: str = "Phonon Flow"
     with_dde: bool = True
     run_anaddb: bool = True
     run_mrgddb: bool = True
@@ -402,6 +398,8 @@ class PhononMaker(DfptFlowMaker):
             input_set_generator=StaticSetGenerator(factory=scf_for_phonons)
         )
     )
+    phonon_maker: BaseAbinitMaker = field(default_factory=PhononResponseMaker)
+    mrgdv_maker: BaseAbinitMaker | None = field(default_factory=MrgdvMaker)
     anaddb_maker: BaseAbinitMaker | None = field(default_factory=AnaddbPhBandsDOSMaker)
     dte_maker: BaseAbinitMaker | None = None
 
@@ -434,7 +432,7 @@ class PhononMaker(DfptFlowMaker):
         **anaddb_kwargs,
     ) -> Flow:
         """
-        Create a phonon band structure and DOS flow.
+        Create a phonon flow.
 
         Parameters
         ----------
@@ -448,7 +446,7 @@ class PhononMaker(DfptFlowMaker):
         Returns
         -------
         Flow
-            A phonon band structure and DOS flow.
+            A phonon flow.
         """
         return super().make(
             structure=structure,

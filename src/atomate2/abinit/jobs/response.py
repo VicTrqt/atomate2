@@ -1,4 +1,4 @@
-"""Response function jobs for running ABINIT calculations."""
+"""Jobs for running ABINIT response to perturbations."""
 
 from __future__ import annotations
 
@@ -273,7 +273,7 @@ def generate_phonon_perts(
     with_wfq: bool = False,
 ) -> dict[str, list[Any] | tuple[Any, ...] | Any]:
     """
-    Generate the perturbations for the phonon calculations.
+    Generate the qpt-list and perturbations for the phonon calculations.
 
     Parameters
     ----------
@@ -287,7 +287,7 @@ def generate_phonon_perts(
         Option for the q-point generation.
     qpt_list: list
         q-point for the phonon calculations.
-    wfq_maker: bool
+    with_wfq: bool
         True if a wfq_maker is provided for k+q computations.
         Not yet implemented, so default is False.
 

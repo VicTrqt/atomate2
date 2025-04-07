@@ -114,7 +114,7 @@ class StaticMakerforPhonons(StaticMaker):
                 directory=temp_dir,
             )
             ai = load_abinit_input(temp_dir)
-            if np.any(np.array(ai["ngkpt"]) % np.array(ngqpt) != np.array([0, 0, 0])):
+            if any(np.array(ai["ngkpt"]) % np.array(ngqpt)):
                 raise ValueError("q-points are not commensurate with k-points")
         self.name = "SCF Calculation for Phonons"
         static_job = self.make(
