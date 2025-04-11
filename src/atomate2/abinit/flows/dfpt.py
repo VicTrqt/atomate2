@@ -26,6 +26,7 @@ from atomate2.abinit.jobs.response import (
     generate_dte_perts,
     generate_phonon_perts,
     run_rf,
+    generate_perts,
 )
 from atomate2.abinit.powerups import update_user_abinit_settings
 from atomate2.abinit.sets.core import ShgStaticSetGenerator, StaticSetGenerator
@@ -156,116 +157,131 @@ class DfptFlowMaker(Maker):
             A DFPT flow
         """
         jobs = []
-        if (
-            isinstance(self.static_maker, StaticMakerforPhonons)
-            and not self.wfq_maker
-            and self.ngqpt
-        ):
-            """A check on the q-mesh is performed in order to avoid gs computations
-            if q and k grids are not commensurate."""
+        # if (
+        #     isinstance(self.static_maker, StaticMakerforPhonons)
+        #     and not self.wfq_maker
+        #     and self.ngqpt
+        # ):
+        #     """A check on the q-mesh is performed in order to avoid gs computations
+        #     if q and k grids are not commensurate."""
+        #
+        #     static_job = self.static_maker.validate_grids(
+        #         structure, ngqpt=self.ngqpt, restart_from=restart_from
+        #     )
+        #     static_job.name = "SCF with grids validation"
+        #     jobs.append(static_job)
+        #
+        # else:
+        static_job = self.static_maker.make(
+            structure=structure, restart_from=restart_from
+        )
+        jobs.append(static_job)
 
-            static_job = self.static_maker.validate_grids(
-                structure, ngqpt=self.ngqpt, restart_from=restart_from
-            )
-            static_job.name = "SCF with grids validation"
-            jobs.append(static_job)
+        # if self.ddk_maker:
+        #     # the use of symmetries is not implemented for DDK
+        #     perturbations = [{"idir": 1}, {"idir": 2}, {"idir": 3}]
+        #     ddk_jobs = []
+        #     outputs: dict[str, list] = {"dirs": []}
+        #     for ipert, pert in enumerate(perturbations):
+        #         ddk_job = self.ddk_maker.make(
+        #             perturbation=pert,
+        #             prev_outputs=static_job.output.dir_name,
+        #         )
+        #         ddk_job.append_name(f"{ipert+1}/{len(perturbations)}")
+        #
+        #         ddk_jobs.append(ddk_job)
+        #         outputs["dirs"].append(ddk_job.output.dir_name)
+        #
+        #     ddk_calcs = Flow(ddk_jobs, outputs)
+        #     jobs.append(ddk_calcs)
+        #
+        # if self.dde_maker:
+        #     # generate the perturbations for the DDE calculations
+        #     dde_perts = generate_dde_perts(
+        #         gsinput=static_job.output.input.abinit_input,
+        #         use_symmetries=self.use_dde_sym,
+        #     )
+        #     jobs.append(dde_perts)
+        #
+        #     # perform the DDE calculations
+        #     dde_calcs = run_rf(
+        #         perturbations=dde_perts.output["perts"],
+        #         rf_maker=self.dde_maker,
+        #         prev_outputs=[static_job.output.dir_name, ddk_calcs.output["dirs"]],
+        #     )
+        #     jobs.append(dde_calcs)
+        #
+        # if self.dte_maker:
+        #     phonon_pert = False
+        #
+        #     # To uncomment once there is a PhononMaker or something similar
+        #     # if self.ph_maker:
+        #     #     phonon_pert = True
+        #
+        #     # generate the perturbations for the DTE calculations
+        #     dte_perts = generate_dte_perts(
+        #         gsinput=static_job.output.input.abinit_input,
+        #         skip_permutations=self.dte_skip_permutations,
+        #         phonon_pert=phonon_pert,
+        #     )
+        #     jobs.append(dte_perts)
+        #
+        #     # perform the DTE calculations
+        #     dte_calcs = run_rf(
+        #         perturbations=dte_perts.output["perts"],
+        #         rf_maker=self.dte_maker,
+        #         prev_outputs=[
+        #             static_job.output.dir_name,
+        #             dde_calcs.output["dirs"],
+        #         ],
+        #     )
+        #     jobs.append(dte_calcs)
+        #
+        # if self.phonon_maker:
+        #     prev_outputs = [static_job.output.dir_name]
+        #     # if self.dde_maker:
+        #     #    prev_outputs.append(dde_calcs.output["dirs"])
+        #     # generation of qpt_list (if needed) and corresponding perturbations
+        #     phonon_perts_qpt_list = generate_phonon_perts(
+        #         gsinput=static_job.output.input.abinit_input,
+        #         ngqpt=self.ngqpt,
+        #         qptopt=self.qptopt,
+        #         qpt_list=self.qpt_list,
+        #     )
+        #     jobs.append(phonon_perts_qpt_list)
+        #     # perform the phonon calculations
+        #     phonon_calcs = run_rf(
+        #         perturbations=phonon_perts_qpt_list.output["perts"],
+        #         rf_maker=self.phonon_maker,
+        #         prev_outputs=prev_outputs,
+        #         with_dde=bool(self.dde_maker),
+        #     )
+        #     jobs.append(phonon_calcs)
 
-        else:
-            static_job = self.static_maker.make(
-                structure=structure, restart_from=restart_from
-            )
-            jobs.append(static_job)
-
-        if self.ddk_maker:
-            # the use of symmetries is not implemented for DDK
-            perturbations = [{"idir": 1}, {"idir": 2}, {"idir": 3}]
-            ddk_jobs = []
-            outputs: dict[str, list] = {"dirs": []}
-            for ipert, pert in enumerate(perturbations):
-                ddk_job = self.ddk_maker.make(
-                    perturbation=pert,
-                    prev_outputs=static_job.output.dir_name,
-                )
-                ddk_job.append_name(f"{ipert+1}/{len(perturbations)}")
-
-                ddk_jobs.append(ddk_job)
-                outputs["dirs"].append(ddk_job.output.dir_name)
-
-            ddk_calcs = Flow(ddk_jobs, outputs)
-            jobs.append(ddk_calcs)
-
-        if self.dde_maker:
-            # generate the perturbations for the DDE calculations
-            dde_perts = generate_dde_perts(
-                gsinput=static_job.output.input.abinit_input,
-                use_symmetries=self.use_dde_sym,
-            )
-            jobs.append(dde_perts)
-
-            # perform the DDE calculations
-            dde_calcs = run_rf(
-                perturbations=dde_perts.output["perts"],
-                rf_maker=self.dde_maker,
-                prev_outputs=[static_job.output.dir_name, ddk_calcs.output["dirs"]],
-            )
-            jobs.append(dde_calcs)
-
-        if self.dte_maker:
-            phonon_pert = False
-
-            # To uncomment once there is a PhononMaker or something similar
-            # if self.ph_maker:
-            #     phonon_pert = True
-
-            # generate the perturbations for the DTE calculations
-            dte_perts = generate_dte_perts(
-                gsinput=static_job.output.input.abinit_input,
-                skip_permutations=self.dte_skip_permutations,
-                phonon_pert=phonon_pert,
-            )
-            jobs.append(dte_perts)
-
-            # perform the DTE calculations
-            dte_calcs = run_rf(
-                perturbations=dte_perts.output["perts"],
-                rf_maker=self.dte_maker,
-                prev_outputs=[
-                    static_job.output.dir_name,
-                    dde_calcs.output["dirs"],
-                ],
-            )
-            jobs.append(dte_calcs)
-
-        if self.phonon_maker:
-            prev_outputs = [static_job.output.dir_name]
-            # if self.dde_maker:
-            #    prev_outputs.append(dde_calcs.output["dirs"])
-            # generation of qpt_list (if needed) and corresponding perturbations
-            phonon_perts_qpt_list = generate_phonon_perts(
-                gsinput=static_job.output.input.abinit_input,
-                ngqpt=self.ngqpt,
-                qptopt=self.qptopt,
-                qpt_list=self.qpt_list,
-            )
-            jobs.append(phonon_perts_qpt_list)
-            # perform the phonon calculations
-            phonon_calcs = run_rf(
-                perturbations=phonon_perts_qpt_list.output["perts"],
-                rf_maker=self.phonon_maker,
-                prev_outputs=prev_outputs,
-                with_dde=bool(self.dde_maker),
-            )
-            jobs.append(phonon_calcs)
+        pert_jobs_generator = generate_perts(
+            gsinput=static_job.output.input.abinit_input,
+            skip_dte_permutations=self.dte_skip_permutations,
+            use_dde_symmetries=self.use_dde_sym,
+            ngqpt=self.ngqpt,
+            qptopt=self.qptopt,
+            qpt_list=self.qpt_list,
+            ddk_maker=self.ddk_maker,
+            dde_maker=self.dde_maker,
+            phonon_maker=self.phonon_maker,
+            dte_maker=self.dte_maker,
+            prev_outputs=static_job.output.dir_name
+        )
+        jobs.append(pert_jobs_generator)
 
         if self.mrgddb_maker:
             # merge the DDE, DTE and Phonon DDB.
             prev_outputs = []
             if self.dde_maker:
-                prev_outputs.append(dde_calcs.output["dirs"])
+                prev_outputs.append(pert_jobs_generator.output["dirs"]["dde"])
             if self.dte_maker:
-                prev_outputs.append(dte_calcs.output["dirs"])
+                prev_outputs.append(pert_jobs_generator.output["dirs"]["dte"])
             if self.phonon_maker:
-                prev_outputs.append(phonon_calcs.output["dirs"])
+                prev_outputs.append(pert_jobs_generator.output["dirs"]["phonon"])
 
             mrgddb_job = self.mrgddb_maker.make(
                 prev_outputs=prev_outputs,
@@ -273,40 +289,40 @@ class DfptFlowMaker(Maker):
 
             jobs.append(mrgddb_job)
 
-        if self.mrgdv_maker:
-            # merge the DDE and Phonon POT files.
-            prev_outputs = []
-            if self.dde_maker:
-                prev_outputs.append(dde_calcs.output["dirs"])
-            if self.phonon_maker:
-                prev_outputs.append(phonon_calcs.output["dirs"])
-
-            mrgdv_job = self.mrgdv_maker.make(
-                prev_outputs=prev_outputs,
-            )
-            jobs.append(mrgdv_job)
-
-        if self.anaddb_maker:
-            # analyze a merged DDB.
-            if self.phonon_maker:
-                # set the required args for the anaddb phbstdos input
-                if anaddb_kwargs:
-                    anaddb_kwargs.update(
-                        {"ngqpt": phonon_perts_qpt_list.output["ngqpt"]}
-                    )
-                else:
-                    anaddb_kwargs = {"ngqpt": phonon_perts_qpt_list.output["ngqpt"]}
-                anaddb_kwargs.setdefault("nqsmall", 10)
-                # ifc needed to create the phonopy like outdoc, user can turn it off
-                anaddb_kwargs.setdefault("with_ifc", True)
-
-            anaddb_job = self.anaddb_maker.make(
-                structure=mrgddb_job.output.structure,
-                prev_outputs=mrgddb_job.output.dir_name,
-                **anaddb_kwargs,
-            )
-
-            jobs.append(anaddb_job)
+        # if self.mrgdv_maker:
+        #     # merge the DDE and Phonon POT files.
+        #     prev_outputs = []
+        #     if self.dde_maker:
+        #         prev_outputs.append(dde_calcs.output["dirs"])
+        #     if self.phonon_maker:
+        #         prev_outputs.append(phonon_calcs.output["dirs"])
+        #
+        #     mrgdv_job = self.mrgdv_maker.make(
+        #         prev_outputs=prev_outputs,
+        #     )
+        #     jobs.append(mrgdv_job)
+        #
+        # if self.anaddb_maker:
+        #     # analyze a merged DDB.
+        #     if self.phonon_maker:
+        #         # set the required args for the anaddb phbstdos input
+        #         if anaddb_kwargs:
+        #             anaddb_kwargs.update(
+        #                 {"ngqpt": phonon_perts_qpt_list.output["ngqpt"]}
+        #             )
+        #         else:
+        #             anaddb_kwargs = {"ngqpt": phonon_perts_qpt_list.output["ngqpt"]}
+        #         anaddb_kwargs.setdefault("nqsmall", 10)
+        #         # ifc needed to create the phonopy like outdoc, user can turn it off
+        #         anaddb_kwargs.setdefault("with_ifc", True)
+        #
+        #     anaddb_job = self.anaddb_maker.make(
+        #         structure=mrgddb_job.output.structure,
+        #         prev_outputs=mrgddb_job.output.dir_name,
+        #         **anaddb_kwargs,
+        #     )
+        #
+        #     jobs.append(anaddb_job)
 
         return Flow(
             jobs, output=[j.output for j in jobs], name=self.name
@@ -333,6 +349,13 @@ class ShgFlowMaker(DfptFlowMaker):
         default_factory=lambda: StaticMaker(input_set_generator=ShgStaticSetGenerator())
     )
     scissor: float | None = None
+
+    @classmethod
+    def with_phonons(cls, **kwargs) -> ShgFlowMaker:
+        maker = cls(**kwargs)
+        maker.phonon_maker = PhononResponseMaker()
+        maker.ngqpt = [1, 1, 1]
+        return maker
 
     def make(
         self,
