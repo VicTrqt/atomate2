@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from abipy.abio.inputs import AnaddbInput
+from abipy.dfpt.ddb import DdbFile
 from abipy.flowtk.utils import Directory
 from monty.json import MontyEncoder, jsanitize
 from pymatgen.io.core import InputSet
@@ -250,6 +251,7 @@ class AnaddbInputGenerator(AbinitMixinInputGenerator):
         anaddb_input = self.get_anaddb_input(
             structure=structure,
             prev_outputs=prev_outputs,
+            input_files=input_files,
         )
 
         anaddb_input.set_vars({"ddb_filepath": f'"{INDATA_PREFIX}_DDB"'})
@@ -267,6 +269,7 @@ class AnaddbInputGenerator(AbinitMixinInputGenerator):
         prev_outputs: list[str] | None = None,
         abinit_settings: dict | None = None,
         factory_kwargs: dict | None = None,
+        input_files: list | None = None,
     ) -> AnaddbInput:
         """
         Generate the AnaddbInput for the input set.
@@ -393,4 +396,29 @@ class AnaddbPhbandsDOSInputGenerator(AnaddbInputGenerator):
     """
 
     factory: Callable = anaddbinp_phbands_dos
-    factory_kwargs: dict = field(default_factory=dict)
+    factory_kwargs: dict = field(default_factory=lambda: {"nqsmall": 15, "with_ifc": 1})
+
+    def get_anaddb_input(
+        self,
+        structure: Structure | None = None,
+        prev_outputs: list[str] | None = None,
+        abinit_settings: dict | None = None,
+        factory_kwargs: dict | None = None,
+        input_files: list | None = None,
+    ) -> AnaddbInput:
+        factory_kwargs = factory_kwargs or {}
+
+        if "ngqpt" not in factory_kwargs and "ngqpt" not in self.factory_kwargs:
+            # required to resolve the deps here as well to get access to
+            irdvars, files = self.resolve_deps(
+                prev_outputs, self.prev_outputs_deps, check_runlevel=False
+            )
+            for infile in input_files:
+                if infile[0].endswith("_DDB"):
+                    ddb = DdbFile(infile[0])
+                    factory_kwargs["ngqpt"] = ddb.guessed_ngqpt
+                    break
+            else:
+                raise RuntimeError("Could not determine the DDB file to read ngqpt")
+
+        return super().get_anaddb_input(structure=structure, prev_outputs=prev_outputs, abinit_settings=abinit_settings, factory_kwargs=factory_kwargs)

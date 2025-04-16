@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 import jobflow
 from jobflow import Maker, Response, job
+from pymatgen.phonon import PhononDos, PhononBandStructureSymmLine
 
 from atomate2.abinit.files import write_anaddb_input_set
 from atomate2.abinit.jobs.base import setup_job
@@ -35,6 +36,8 @@ __all__ = ["AnaddbDfptDteMaker", "AnaddbMaker", "AnaddbPhBandsDOSMaker", "anaddb
 
 _DATA_OBJECTS = [
     AbinitStoredFile,
+    PhononDos,
+    PhononBandStructureSymmLine,
 ]
 
 
@@ -102,7 +105,6 @@ class AnaddbMaker(Maker):
         structure: Structure,
         prev_outputs: str | list[str] | None = None,
         history: JobHistory | None = None,
-        **anaddb_factory_kwargs,
     ) -> jobflow.Response:
         """
         Return an AnaDDB jobflow.Job.
@@ -113,8 +115,6 @@ class AnaddbMaker(Maker):
         history : JobHistory
             A JobHistory object containing the history of this job.
         """
-        self.input_set_generator.factory_kwargs = anaddb_factory_kwargs
-
         # Setup job and get general job configuration
         config = setup_job(
             structure=None,
@@ -177,7 +177,4 @@ class AnaddbPhBandsDOSMaker(AnaddbMaker):
     name: str = "Anaddb PhbandsDOS"
     input_set_generator: AnaddbInputGenerator = field(
         default_factory=AnaddbPhbandsDOSInputGenerator
-    )
-    task_document_kwargs: dict = field(
-        default_factory=lambda: {"files_to_store": ["PHBST", "PHDOS"]}
     )

@@ -31,8 +31,9 @@ if TYPE_CHECKING:
 
     from abipy.abio.inputs import AbinitInput
     from pymatgen.core.structure import Structure
+    from pymatgen.io.abinit.abiobjects import KSampling
 
-    from atomate2.abinit.sets.base import AbinitInputGenerator
+    from atomate2.abinit.sets.base import AbinitInputGenerator, get_ksampling
     from atomate2.abinit.utils.history import JobHistory
 
 logger = logging.getLogger(__name__)
@@ -330,17 +331,17 @@ def generate_phonon_perts(
 @job
 def generate_perts(
     gsinput: AbinitInput,
-    # TODO: or gsinput via prev_outputs?
+    scf_output,
     skip_dte_permutations: bool | None = False,
     use_dde_symmetries: bool | None = False,
     ngqpt: list | tuple | None = None,
     qptopt: int | None = 1,
     qpt_list: list[list] | None = None,
+    user_qpoints_settings: dict | KSampling | None = None,
     ddk_maker: ResponseMaker | None = None,
     dde_maker: ResponseMaker | None = None,
     phonon_maker: ResponseMaker | None = None,
     dte_maker: ResponseMaker | None = None,
-    prev_outputs = None
 ) -> Flow:
     """
     Generate the perturbations for the DTE calculations.
@@ -352,8 +353,6 @@ def generate_perts(
     skip_dte_permutations: Since the current version of abinit always performs
         all the permutations of the perturbations, even if only one is asked,
         if True avoids the creation of inputs that will produce duplicated outputs.
-    phonon_pert: is True also the phonon perturbations will be considered.
-        Default False.
     """
 
     if all(not m for m in [ddk_maker, dde_maker, phonon_maker, dte_maker]):
@@ -367,17 +366,14 @@ def generate_perts(
     ph_jobs = []
     dte_jobs = []
 
-    if prev_outputs is None:
-        prev_outputs = []
-    elif not isinstance(prev_outputs, (list, tuple)):
-        prev_outputs = [prev_outputs]
+    if not isinstance(scf_output, (list, tuple)):
+        scf_output = [scf_output]
 
     gsinput = gsinput.deepcopy()
     gsinput.pop_vars(["autoparal"])
     gsinput.pop_par_vars(all=True)
 
-    #######DDK
-
+    # DDK
     if ddk_maker:
         # the use of symmetries is not implemented for DDK
         perturbations = [{"idir": 1}, {"idir": 2}, {"idir": 3}]
@@ -385,17 +381,16 @@ def generate_perts(
         for ipert, pert in enumerate(perturbations):
             ddk_job = ddk_maker.make(
                 perturbation=pert,
-                prev_outputs=prev_outputs,
+                prev_outputs=scf_output,
             )
             ddk_job.append_name(f"{ipert + 1}/{len(perturbations)}")
 
             ddk_jobs.append(ddk_job)
-            # outputs["dirs"].append(ddk_job.output.dir_name)
 
         outputs["perts"]["ddk"] = [j.output for j in ddk_jobs]
         outputs["dirs"]["ddk"] = [j.output.dir_name for j in ddk_jobs]
 
-    #######DDE
+    # DDE
     if dde_maker:
         if not ddk_maker:
             raise ValueError("DDK maker is required to run DDE")
@@ -407,27 +402,31 @@ def generate_perts(
         else:
             dde_perts = [{"idir": 1}, {"idir": 2}, {"idir": 3}]
 
-        dde_prev = prev_outputs + [j.output.dir_name for j in ddk_jobs]
+        dde_prev = scf_output + [j.output.dir_name for j in ddk_jobs]
         dde_jobs = get_jobs(dde_perts, rf_maker=dde_maker, prev_outputs=dde_prev)
 
         outputs["perts"]["dde"] = [j.output for j in dde_jobs]
         outputs["dirs"]["dde"] = [j.output.dir_name for j in dde_jobs]
 
-    ####### Phonons
-
+    # Phonons
     if phonon_maker:
         if qpt_list is not None and ngqpt is not None:
             raise ValueError("qpt_list and ngqpt can't be used together")
 
         if qpt_list is None:
-            if ngqpt is None:
-                ngqpt = np.array(gsinput["ngkpt"])
-            else:
+            if ngqpt is not None:
                 ngqpt = np.array(ngqpt)
+            elif user_qpoints_settings is not None:
+                ksampling = get_ksampling(structure=gsinput.structure, user_kpoints_settings=user_qpoints_settings, force_gamma=True)
+                if "ngkpt" not in ksampling.abivars:
+                    raise RuntimeError(f"Could not determine ngqpt from ksampling {ksampling}")
+                ngqpt = ksampling.abivars["ngkpt"]
+            else:
+                ngqpt = np.array(gsinput["ngkpt"])
 
             qpt_list = gsinput.abiget_ibz(ngkpt=ngqpt, shiftk=(0, 0, 0), kptopt=qptopt).points
 
-        # check that qpt are consistent
+        # check that qpt are consistent with kpt grid
         if ngqpt is None or any(gsinput["ngkpt"] % ngqpt != 0):
             # find which q points are needed and build nscf inputs to calculate the WFQ
             kpts = gsinput.abiget_ibz(shiftk=(0, 0, 0), kptopt=3).points.tolist()
@@ -447,12 +446,12 @@ def generate_perts(
             #     outputs["dirs"].append(wfq_job.output.dir_name)
             # and the last if removed
 
-        ph_jobs = get_jobs(ph_perts, rf_maker=phonon_maker, prev_outputs=prev_outputs, is_phonon=True)
+        ph_jobs = get_jobs(ph_perts, rf_maker=phonon_maker, prev_outputs=scf_output, is_phonon=True)
 
         outputs["perts"]["phonon"] = [j.output for j in ph_jobs]
         outputs["dirs"]["phonon"] = [j.output.dir_name for j in ph_jobs]
 
-    #######DTE
+    # DTE
     if dte_maker:
         dte_perts = gsinput.abiget_irred_dteperts(
             phonon_pert=phonon_maker is not None,
@@ -477,7 +476,7 @@ def generate_perts(
         dde_jobs = [update_user_abinit_settings(ddej, {"prtwf": 1}) for ddej in dde_jobs]
         ph_jobs = [update_user_abinit_settings(pj, {"prtwf": 1}) for pj in ph_jobs]
 
-        dte_prev = prev_outputs + [j.output.dir_name for j in dde_jobs] + [j.output.dir_name for j in ph_jobs]
+        dte_prev = scf_output + [j.output.dir_name for j in dde_jobs] + [j.output.dir_name for j in ph_jobs]
         dte_jobs = get_jobs(dte_perts, rf_maker=dte_maker, prev_outputs=dte_prev)
         outputs["perts"]["dte"] = [j.output for j in dte_jobs]
         outputs["dirs"]["dte"] = [j.output.dir_name for j in dte_jobs]
@@ -505,10 +504,6 @@ def get_jobs(
     prev_outputs : a list of previous output directories
     """
     rf_jobs = []
-
-    # cannot be done here. Do this in the base abinit maker? but may not be needed
-    # if prev_outputs:
-    #     prev_outputs = list(np.hstack(prev_outputs))
 
     for ipert, pert in enumerate(perturbations):
         rf_job = rf_maker.make(

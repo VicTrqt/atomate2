@@ -11,7 +11,7 @@ from typing import Any, Optional, Union
 from abipy.dfpt.ddb import DdbFile
 from emmet.core.structure import StructureMetadata
 from jobflow.utils import ValueEnum
-from pydantic import BaseModel, Field
+from pydantic import Field
 from pymatgen.core.structure import Structure
 
 from atomate2.abinit.schemas.outfiles import AbinitStoredFile
@@ -29,208 +29,13 @@ class TaskState(ValueEnum):
     UNCONVERGED = "unconverged"
 
 
-# # need to inherit from MSONable to be stored in the data store
-# # I tried to combine it with @dataclass, but didn't work...
-# class DdbFileStr(MSONable):
-#     """Object storing the raw string of a DDB file."""
-
-#     def __init__(self, ddbfilepath: str | Path, ddb_as_str: str) -> None:
-#         self.ddbfilepath: str | Path = ddbfilepath
-#         self.ddb_as_str: str = ddb_as_str
-
-#     @classmethod
-#     def from_ddbfile(cls, ddbfile: DdbFile) -> Self:
-#         """Create a DdbFileStr object from the native DdbFile abipy object."""
-#         with open(ddbfile.filepath) as f:
-#             ddb_as_str = f.read()
-#         return cls(ddbfilepath=ddbfile.filepath, ddb_as_str=ddb_as_str)
-
-
 class MrgddbObject(ValueEnum):
     """Types of Mrgddb data objects."""
 
     DDBFILE = "ddb"  # DDB file as string
 
 
-class CalculationOutput(BaseModel):
-    """Document defining Mrgddb calculation outputs.
-
-    Parameters
-    ----------
-    structure: Structure
-        The final pymatgen Structure of the system
-    """
-
-    structure: Union[Structure] = Field(
-        None, description="The final structure from the calculation"
-    )
-
-    @classmethod
-    def from_abinit_outddb(
-        cls,
-        output: DdbFile,
-    ) -> CalculationOutput:
-        """
-        Create an Mrgddb output document from the merged Abinit out_DDB file.
-
-        Parameters
-        ----------
-        output: .DdbFile
-            A DdbFile object.
-
-        Returns
-        -------
-        The Mrgddb calculation output document.
-        """
-        structure = output.structure
-
-        return cls(
-            structure=structure,
-        )
-
-
-class Calculation(BaseModel):
-    """Full Mrgddb calculation (inputs) and outputs.
-
-    Parameters
-    ----------
-    dir_name: str
-        The directory for this Mrgddb calculation
-    ddb_version: str
-        DDB version
-    has_mrgddb_completed: .TaskState
-        Whether Mrgddb completed the merge successfully
-    output: .CalculationOutput
-        The Mrgddb calculation output
-    completed_at: str
-        Timestamp for when the merge was completed
-    output_file_paths: Dict[str, str]
-        Paths (relative to dir_name) of the Mrgddb output files
-        associated with this calculation
-    """
-
-    dir_name: str = Field(None, description="The directory for this Abinit calculation")
-    ddb_version: str = Field(
-        None, description="Abinit version used to perform the calculation"
-    )
-    has_mrgddb_completed: TaskState = Field(
-        None, description="Whether Abinit completed the calculation successfully"
-    )
-    output: Optional[CalculationOutput] = Field(
-        None, description="The Abinit calculation output"
-    )
-    completed_at: str = Field(
-        None, description="Timestamp for when the calculation was completed"
-    )
-    output_file_paths: Optional[dict[str, str]] = Field(
-        None,
-        description="Paths (relative to dir_name) of the Abinit output files "
-        "associated with this calculation",
-    )
-
-    @classmethod
-    def from_abinit_files(
-        cls,
-        dir_name: Path | str,
-        task_name: str,
-        abinit_outddb_file: Path | str = "out_DDB",
-        abinit_mrglog_file: Path | str = "run.log",
-    ) -> tuple[Calculation, dict[MrgddbObject, dict]]:
-        """
-        Create a Mrgddb calculation document from a directory and file paths.
-
-        Parameters
-        ----------
-        dir_name: Path or str
-            The directory containing the calculation outputs.
-        task_name: str
-            The task name.
-        abinit_outddb_file: Path or str
-            Path to the merged DDB file, relative to dir_name.
-        abinit_mrglog_file: Path or str
-            Path to the main log of mrgddb job, relative to dir_name.
-
-        Returns
-        -------
-        .Calculation
-            A Mrgddb calculation document.
-        """
-        dir_name = Path(dir_name)
-        abinit_outddb_file = dir_name / abinit_outddb_file
-
-        output_doc = None
-        mrgddb_objects: dict[MrgddbObject, Any] = {}
-        if abinit_outddb_file.exists():
-            abinit_outddb = DdbFile.from_file(abinit_outddb_file)
-            mrgddb_objects[MrgddbObject.DDBFILE] = AbinitStoredFile.from_file(  # type: ignore[index]
-                filepath=abinit_outddb_file, data_type=str
-            )
-            output_doc = CalculationOutput.from_abinit_outddb(abinit_outddb)
-
-            completed_at = str(
-                datetime.fromtimestamp(
-                    os.stat(abinit_outddb_file).st_mtime, tz=timezone.utc
-                )
-            )
-
-        report = None
-        has_mrgddb_completed = TaskState.FAILED
-        try:
-            report = get_mrgddb_report(logfile=abinit_mrglog_file)
-
-            if report["run_completed"] and abinit_outddb_file.exists():
-                has_mrgddb_completed = TaskState.SUCCESS
-
-        # except (DdbError, Exception) as exc:
-        except Exception as exc:
-            msg = f"{cls} exception while parsing mrgddb event_report:\n{exc}"
-            logger.critical(msg)
-            logging.exception(msg)
-
-        return (
-            cls(
-                dir_name=str(dir_name),
-                task_name=task_name,
-                ddb_version=str(abinit_outddb.version),
-                has_mrgddb_completed=has_mrgddb_completed,
-                completed_at=completed_at,
-                output=output_doc,
-            ),
-            mrgddb_objects,
-        )
-
-
-class OutputDoc(BaseModel):
-    """Summary of the outputs for a Mrgddb calculation.
-
-    Parameters
-    ----------
-    structure: Structure
-        The final pymatgen Structure of the final system
-    """
-
-    structure: Union[Structure] = Field(None, description="The output structure object")
-
-    @classmethod
-    def from_abinit_calc_doc(cls, calc_doc: Calculation) -> OutputDoc:
-        """Create a summary from an abinit CalculationDocument.
-
-        Parameters
-        ----------
-        calc_doc: .Calculation
-            A Mrgddb calculation document.
-
-        Returns
-        -------
-        .OutputDoc
-            The calculation output summary.
-        """
-        return cls(
-            structure=calc_doc.output.structure,
-        )
-
-
-class MrgddbTaskDoc(StructureMetadata):
+class MrgddbTaskDoc(StructureMetadata, extra="allow"):
     """Definition of task document about an Mrgddb Job.
 
     Parameters
@@ -239,8 +44,6 @@ class MrgddbTaskDoc(StructureMetadata):
         The directory for this Abinit task
     completed_at: str
         Timestamp for when this task was completed
-    output: .OutputDoc
-        The output of the final calculation
     structure: Structure
         Final output structure from the task
     state: .TaskState
@@ -249,8 +52,6 @@ class MrgddbTaskDoc(StructureMetadata):
         List of Abinit objects included with this task document
     abinit_objects: Dict[.MrgddbObject, Any]
         Abinit objects associated with this task
-    task_label: str
-        A description of the task
     tags: List[str]
         Metadata tags for this task document
     """
@@ -261,20 +62,15 @@ class MrgddbTaskDoc(StructureMetadata):
     completed_at: Optional[str] = Field(
         None, description="Timestamp for when this task was completed"
     )
-    output: Optional[OutputDoc] = Field(
-        None, description="The output of the final calculation"
-    )
     structure: Union[Structure] = Field(
         None, description="Final output atoms from the task"
     )
-    state: Optional[TaskState] = Field(None, description="State of this task")
     included_objects: Optional[list[MrgddbObject]] = Field(
         None, description="List of Mrgddb objects included with this task document"
     )
     mrgddb_objects: Optional[dict[MrgddbObject, Any]] = Field(
         None, description="Mrgddb objects associated with this task"
     )
-    task_label: Optional[str] = Field(None, description="A description of the task")
     tags: Optional[list[str]] = Field(
         None, description="Metadata tags for this task document"
     )
@@ -284,7 +80,6 @@ class MrgddbTaskDoc(StructureMetadata):
         cls,
         dir_name: Path | str,
         additional_fields: dict[str, Any] = None,
-        **abinit_calculation_kwargs,
     ) -> MrgddbTaskDoc:
         """Create a task document from a directory containing Abinit/Mrgddb files.
 
@@ -294,9 +89,6 @@ class MrgddbTaskDoc(StructureMetadata):
             The path to the folder containing the calculation outputs.
         additional_fields: Dict[str, Any]
             Dictionary of additional fields to add to output document.
-        **abinit_calculation_kwargs
-            Additional parsing options that will be passed to the
-            :obj:`.Calculation.from_abinit_files` function.
 
         Returns
         -------
@@ -313,54 +105,56 @@ class MrgddbTaskDoc(StructureMetadata):
 
         if len(task_files) == 0:
             raise FileNotFoundError("No Abinit files found!")
+        if len(task_files) > 1:
+            raise RuntimeError(f"Only one mrgddb calculation expected. Found {len(task_files)}")
 
-        calcs_reversed = []
-        all_mrgddb_objects = []
-        for task_name, files in task_files.items():
-            calc_doc, mrgddb_objects = Calculation.from_abinit_files(
-                dir_name, task_name, **files, **abinit_calculation_kwargs
+        std_task_files = list(task_files.values())[0]
+
+        abinit_outddb_file = std_task_files["abinit_outddb_file"]
+
+        if not abinit_outddb_file.exists():
+            raise RuntimeError(f"The output DDB file {abinit_outddb_file} does not exist")
+
+        mrgddb_objects: dict[MrgddbObject, Any] = {}
+        abinit_outddb = DdbFile.from_file(abinit_outddb_file)
+        structure = abinit_outddb.structure
+        mrgddb_objects[MrgddbObject.DDBFILE] = AbinitStoredFile.from_file(  # type: ignore[index]
+            filepath=abinit_outddb_file, data_type=str
+        )
+
+        completed_at = str(
+            datetime.fromtimestamp(
+                os.stat(abinit_outddb_file).st_mtime, tz=timezone.utc
             )
-            calcs_reversed.append(calc_doc)
-            all_mrgddb_objects.append(mrgddb_objects)
+        )
+
+        report = get_mrgddb_report(logfile=std_task_files["abinit_mrglog_file"])
+
+        if not report["run_completed"]:
+            raise RuntimeError("mrgdd execution was not completed")
 
         tags = additional_fields.get("tags")
 
         dir_name = get_uri(dir_name)  # convert to full uri path
 
-        # only store objects from last calculation
-        # TODO: make this an option
-        mrgddb_objects = all_mrgddb_objects[-1]
         included_objects = None
         if mrgddb_objects:
             included_objects = list(mrgddb_objects)
 
-        # rewrite the original structure save!
-
-        if isinstance(calcs_reversed[-1].output.structure, Structure):
-            attr = "from_structure"
-            dat = {
-                "structure": calcs_reversed[-1].output.structure,
-                "meta_structure": calcs_reversed[-1].output.structure,
-                "include_structure": True,
-            }
-        doc = getattr(cls, attr)(**dat)
-        ddict = doc.dict()
-
         data = {
-            "calcs_reversed": calcs_reversed,
-            "completed_at": calcs_reversed[-1].completed_at,
             "dir_name": dir_name,
+            "completed_at": completed_at,
             "included_objects": included_objects,
             "mrgddb_objects": mrgddb_objects,
-            "meta_structure": calcs_reversed[-1].output.structure,
-            "state": calcs_reversed[-1].has_mrgddb_completed,
-            "structure": calcs_reversed[-1].output.structure,
             "tags": tags,
         }
 
-        doc = cls(**ddict)
-        doc = doc.model_copy(update=data)
-        return doc.model_copy(update=additional_fields, deep=True)
+        return cls.from_structure(
+            structure=structure,
+            meta_structure=structure,
+            **data,
+            **additional_fields
+        )
 
 
 def _find_abinit_files(

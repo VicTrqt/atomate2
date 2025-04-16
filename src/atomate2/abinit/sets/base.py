@@ -760,98 +760,10 @@ class AbinitInputGenerator(AbinitMixinInputGenerator):
     ) -> KSampling | None:
         """Get the kpoints file."""
         kpoints_updates = {} if kpoints_updates is None else kpoints_updates
-
-        # use user setting if set otherwise default to base config settings
-        if self.user_kpoints_settings != {}:
-            kconfig = copy.deepcopy(self.user_kpoints_settings)
-        elif kpoints_updates:
-            kconfig = kpoints_updates
-        else:
+        if self.user_kpoints_settings == {} and not kpoints_updates:
             return None
 
-        if isinstance(kconfig, KSampling):
-            return kconfig
-
-        explicit = (
-            kconfig.get("explicit")
-            or len(kconfig.get("added_kpoints", [])) > 0
-            or "zero_weighted_reciprocal_density" in kconfig
-            or "zero_weighted_line_density" in kconfig
-        )
-
-        base_kpoints = None
-        if kconfig.get("line_density"):
-            # handle line density generation
-            kpath = HighSymmKpath(structure, **kconfig.get("kpath_kwargs", {}))
-            frac_k_points, _k_points_labels = kpath.get_kpoints(
-                line_density=kconfig["line_density"], coords_are_cartesian=False
-            )
-            base_kpoints = KSampling(
-                mode=KSamplingModes.automatic,
-                num_kpts=len(frac_k_points),
-                kpts=frac_k_points,
-                kpts_weights=[1] * len(frac_k_points),
-                comment="Non SCF run along symmetry lines",
-            )
-        elif kconfig.get("grid_density") or kconfig.get("reciprocal_density"):
-            # handle regular weighted k-point grid generation
-            if kconfig.get("grid_density"):
-                vasp_kpoints = Kpoints.automatic_density(
-                    structure, int(kconfig["grid_density"]), self.force_gamma
-                )
-                base_kpoints = KSampling(
-                    mode=KSamplingModes.monkhorst,
-                    num_kpts=0,
-                    kpts=vasp_kpoints.kpts,
-                    kpt_shifts=vasp_kpoints.kpts_shift,
-                    comment=vasp_kpoints.comment,
-                )
-            elif kconfig.get("reciprocal_density"):
-                vasp_kpoints = Kpoints.automatic_density_by_vol(
-                    structure, kconfig["reciprocal_density"], self.force_gamma
-                )
-                base_kpoints = KSampling(
-                    mode=KSamplingModes.monkhorst,
-                    num_kpts=0,
-                    kpts=vasp_kpoints.kpts,
-                    kpt_shifts=vasp_kpoints.kpts_shift,
-                    comment=vasp_kpoints.comment,
-                )
-            if explicit:
-                sga = SpacegroupAnalyzer(structure, symprec=self.symprec)
-                mesh = sga.get_ir_reciprocal_mesh(base_kpoints.kpts[0])
-                base_kpoints = KSampling(
-                    mode=KSamplingModes.automatic,
-                    num_kpts=len(mesh),
-                    kpts=[i[0] for i in mesh],
-                    kpts_weights=[i[1] for i in mesh],
-                    comment="Uniform grid",
-                )
-            else:
-                # if not explicit that means no other options have been specified
-                # so we can return the k-points as is
-                return base_kpoints
-
-        added_kpoints = None
-        if kconfig.get("added_kpoints"):
-            added_kpoints = KSampling(
-                mode=KSamplingModes.automatic,
-                num_kpts=len(kconfig.get("added_kpoints")),
-                kpts=kconfig.get("added_kpoints"),
-                kpts_weights=[0] * len(kconfig.get("added_kpoints")),
-                comment="Specified k-points only",
-            )
-
-        if base_kpoints and not added_kpoints:
-            return base_kpoints
-        if added_kpoints and not base_kpoints:
-            return added_kpoints
-
-        # do some sanity checking
-        if not (base_kpoints or added_kpoints):
-            raise ValueError("Invalid k-point generation algo.")
-
-        return _combine_kpoints(base_kpoints, added_kpoints)
+        return get_ksampling(structure=structure, kpoints_updates=kpoints_updates, user_kpoints_settings=self.user_kpoints_settings, force_gamma=self.force_gamma, symprec=self.symprec)
 
 
 def _combine_kpoints(*kpoints_objects: KSampling) -> KSampling:
@@ -877,3 +789,103 @@ def _combine_kpoints(*kpoints_objects: KSampling) -> KSampling:
         kpts_weights=weights,
         comment="Combined k-points",
     )
+
+
+def get_ksampling(
+        structure: Structure,
+        kpoints_updates: dict[str, Any] | None = None,
+        user_kpoints_settings: dict | KSampling | None = None,
+        force_gamma: bool = True,
+        symprec: float = SETTINGS.SYMPREC
+) -> KSampling:
+    # use user setting if set otherwise default to base config settings
+    if user_kpoints_settings != {}:
+        kconfig = copy.deepcopy(user_kpoints_settings)
+    elif kpoints_updates:
+        kconfig = kpoints_updates
+    else:
+        raise ValueError("No kpoint settings defined")
+
+    if isinstance(kconfig, KSampling):
+        return kconfig
+
+    explicit = (
+            kconfig.get("explicit")
+            or len(kconfig.get("added_kpoints", [])) > 0
+            or "zero_weighted_reciprocal_density" in kconfig
+            or "zero_weighted_line_density" in kconfig
+    )
+
+    base_kpoints = None
+    if kconfig.get("line_density"):
+        # handle line density generation
+        kpath = HighSymmKpath(structure, **kconfig.get("kpath_kwargs", {}))
+        frac_k_points, _k_points_labels = kpath.get_kpoints(
+            line_density=kconfig["line_density"], coords_are_cartesian=False
+        )
+        base_kpoints = KSampling(
+            mode=KSamplingModes.automatic,
+            num_kpts=len(frac_k_points),
+            kpts=frac_k_points,
+            kpts_weights=[1] * len(frac_k_points),
+            comment="Non SCF run along symmetry lines",
+        )
+    elif kconfig.get("grid_density") or kconfig.get("reciprocal_density"):
+        # handle regular weighted k-point grid generation
+        if kconfig.get("grid_density"):
+            vasp_kpoints = Kpoints.automatic_density(
+                structure, int(kconfig["grid_density"]), force_gamma
+            )
+            base_kpoints = KSampling(
+                mode=KSamplingModes.monkhorst,
+                num_kpts=0,
+                kpts=vasp_kpoints.kpts,
+                kpt_shifts=vasp_kpoints.kpts_shift,
+                comment=vasp_kpoints.comment,
+            )
+        elif kconfig.get("reciprocal_density"):
+            vasp_kpoints = Kpoints.automatic_density_by_vol(
+                structure, kconfig["reciprocal_density"], force_gamma
+            )
+            base_kpoints = KSampling(
+                mode=KSamplingModes.monkhorst,
+                num_kpts=0,
+                kpts=vasp_kpoints.kpts,
+                kpt_shifts=vasp_kpoints.kpts_shift,
+                comment=vasp_kpoints.comment,
+            )
+        if explicit:
+            sga = SpacegroupAnalyzer(structure, symprec=symprec)
+            mesh = sga.get_ir_reciprocal_mesh(base_kpoints.kpts[0])
+            base_kpoints = KSampling(
+                mode=KSamplingModes.automatic,
+                num_kpts=len(mesh),
+                kpts=[i[0] for i in mesh],
+                kpts_weights=[i[1] for i in mesh],
+                comment="Uniform grid",
+            )
+        else:
+            # if not explicit that means no other options have been specified
+            # so we can return the k-points as is
+            return base_kpoints
+
+    added_kpoints = None
+    if kconfig.get("added_kpoints"):
+        added_kpoints = KSampling(
+            mode=KSamplingModes.automatic,
+            num_kpts=len(kconfig.get("added_kpoints")),
+            kpts=kconfig.get("added_kpoints"),
+            kpts_weights=[0] * len(kconfig.get("added_kpoints")),
+            comment="Specified k-points only",
+        )
+
+    if base_kpoints and not added_kpoints:
+        return base_kpoints
+    if added_kpoints and not base_kpoints:
+        return added_kpoints
+
+    # do some sanity checking
+    if not (base_kpoints or added_kpoints):
+        raise ValueError("Invalid k-point generation algo.")
+
+    return _combine_kpoints(base_kpoints, added_kpoints)

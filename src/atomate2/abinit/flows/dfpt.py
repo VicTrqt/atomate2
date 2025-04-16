@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import abipy.core.abinit_units as abu
 from abipy.abio.factories import scf_for_phonons
 from jobflow import Flow, Maker
+from pymatgen.io.abinit.abiobjects import KSampling
 
 from atomate2.abinit.jobs.anaddb import (
     AnaddbDfptDteMaker,
@@ -106,6 +107,7 @@ class DfptFlowMaker(Maker):
     qpt_list: list[list] | None = None
     ngqpt: list | None = None
     qptopt: int = None
+    user_qpoints_settings: dict | KSampling | None = None
 
     def __post_init__(self) -> None:
         """Process post-init configuration."""
@@ -265,11 +267,12 @@ class DfptFlowMaker(Maker):
             ngqpt=self.ngqpt,
             qptopt=self.qptopt,
             qpt_list=self.qpt_list,
+            user_qpoints_settings=self.user_qpoints_settings,
             ddk_maker=self.ddk_maker,
             dde_maker=self.dde_maker,
             phonon_maker=self.phonon_maker,
             dte_maker=self.dte_maker,
-            prev_outputs=static_job.output.dir_name
+            scf_output=static_job.output.dir_name
         )
         jobs.append(pert_jobs_generator)
 
@@ -302,27 +305,18 @@ class DfptFlowMaker(Maker):
         #     )
         #     jobs.append(mrgdv_job)
         #
-        # if self.anaddb_maker:
-        #     # analyze a merged DDB.
-        #     if self.phonon_maker:
-        #         # set the required args for the anaddb phbstdos input
-        #         if anaddb_kwargs:
-        #             anaddb_kwargs.update(
-        #                 {"ngqpt": phonon_perts_qpt_list.output["ngqpt"]}
-        #             )
-        #         else:
-        #             anaddb_kwargs = {"ngqpt": phonon_perts_qpt_list.output["ngqpt"]}
-        #         anaddb_kwargs.setdefault("nqsmall", 10)
-        #         # ifc needed to create the phonopy like outdoc, user can turn it off
-        #         anaddb_kwargs.setdefault("with_ifc", True)
-        #
-        #     anaddb_job = self.anaddb_maker.make(
-        #         structure=mrgddb_job.output.structure,
-        #         prev_outputs=mrgddb_job.output.dir_name,
-        #         **anaddb_kwargs,
-        #     )
-        #
-        #     jobs.append(anaddb_job)
+
+        # It could be possible to handle the case of qpt_list not None by
+        # using a different anaddb_maker that calculates only the frequencies
+        # at the selected qpoints. Unlikely case. Not handled at the moment.
+        if self.anaddb_maker and self.mrgddb_maker and self.qpt_list is None:
+            # analyze a merged DDB.
+            anaddb_job = self.anaddb_maker.make(
+                structure=static_job.output.structure,
+                prev_outputs=mrgddb_job.output.dir_name,
+            )
+
+            jobs.append(anaddb_job)
 
         return Flow(
             jobs, output=[j.output for j in jobs], name=self.name
@@ -425,6 +419,7 @@ class PhononMaker(DfptFlowMaker):
     mrgdv_maker: BaseAbinitMaker | None = field(default_factory=MrgdvMaker)
     anaddb_maker: BaseAbinitMaker | None = field(default_factory=AnaddbPhBandsDOSMaker)
     dte_maker: BaseAbinitMaker | None = None
+    qptopt: int | None = 1
 
     def __post_init__(self) -> None:
         """Process post-init configuration."""
