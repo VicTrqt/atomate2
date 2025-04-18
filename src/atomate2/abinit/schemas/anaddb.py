@@ -62,8 +62,6 @@ class OutputDoc(BaseModel):
     temperatures: list
         The temperatures at which the vibrational
         part of the free energies and other properties have been computed
-    total_dft_energy: float
-        The total DFT energy per formula unit in eV
     volume_per_formula_unit: float
         The volume per formula unit in Angstrom**3
     formula_units: int
@@ -124,10 +122,6 @@ class OutputDoc(BaseModel):
         description="temperatures at which the vibrational"
         " part of the free energies"
         " and other properties have been computed",
-    )
-
-    total_dft_energy: Optional[float] = Field(
-        None, description="total DFT energy per formula unit in eV"
     )
 
     volume_per_formula_unit: Optional[float] = Field(
@@ -243,7 +237,7 @@ class OutputDoc(BaseModel):
             entropies = None
         born = getattr(abinit_anaddb, "bec", None)
         born = born.values if born else None
-        total_dft_energy = None  # TODO: get the total energy from the scf gs I guess ?
+
         formula_units = (
             structure.composition.num_atoms
             / structure.composition.reduced_composition.num_atoms
@@ -253,8 +247,6 @@ class OutputDoc(BaseModel):
         has_imaginary_modes = (
             phonon_bandstructure.has_imaginary_freq() if phonon_bandstructure else None
         )
-
-        epsilon_static = None  # ???
 
         # for pm/V units (SI)
         dijk = (
@@ -284,12 +276,10 @@ class OutputDoc(BaseModel):
             internal_energies=internal_energies,
             entropies=entropies,
             temperatures=temperatures,
-            total_dft_energy=total_dft_energy,
             volume_per_formula_unit=volume_per_formula_unit,
             formula_units=formula_units,
             has_imaginary_modes=has_imaginary_modes,
             born=born,
-            epsilon_static=epsilon_static,
             dijk=dijk,
             epsinf=epsinf,
         )
