@@ -35,7 +35,7 @@ class MrgddbObject(ValueEnum):
     DDBFILE = "ddb"  # DDB file as string
 
 
-class MrgddbTaskDoc(StructureMetadata, extra="allow"):
+class MrgddbTaskDoc(StructureMetadata, extra="allow"):  # type: ignore[call-arg]
     """Definition of task document about an Mrgddb Job.
 
     Parameters
@@ -106,14 +106,18 @@ class MrgddbTaskDoc(StructureMetadata, extra="allow"):
         if len(task_files) == 0:
             raise FileNotFoundError("No Abinit files found!")
         if len(task_files) > 1:
-            raise RuntimeError(f"Only one mrgddb calculation expected. Found {len(task_files)}")
+            raise RuntimeError(
+                f"Only one mrgddb calculation expected. Found {len(task_files)}"
+            )
 
-        std_task_files = list(task_files.values())[0]
+        std_task_files = next(iter(task_files.values()))
 
         abinit_outddb_file = std_task_files["abinit_outddb_file"]
 
         if not abinit_outddb_file.exists():
-            raise RuntimeError(f"The output DDB file {abinit_outddb_file} does not exist")
+            raise RuntimeError(
+                f"The output DDB file {abinit_outddb_file} does not exist"
+            )
 
         mrgddb_objects: dict[MrgddbObject, Any] = {}
         abinit_outddb = DdbFile.from_file(abinit_outddb_file)
@@ -131,7 +135,7 @@ class MrgddbTaskDoc(StructureMetadata, extra="allow"):
         report = get_mrgddb_report(logfile=std_task_files["abinit_mrglog_file"])
 
         if not report["run_completed"]:
-            raise RuntimeError("mrgdd execution was not completed")
+            raise RuntimeError("mrgddb execution was not completed")
 
         tags = additional_fields.get("tags")
 
@@ -150,10 +154,7 @@ class MrgddbTaskDoc(StructureMetadata, extra="allow"):
         }
 
         return cls.from_structure(
-            structure=structure,
-            meta_structure=structure,
-            **data,
-            **additional_fields
+            structure=structure, meta_structure=structure, **data, **additional_fields
         )
 
 

@@ -13,13 +13,11 @@ from typing import Any, Optional, Union
 import abipy.core.abinit_units as abu
 import numpy as np
 from abipy.dfpt.anaddbnc import AnaddbNcFile
-from abipy.dfpt.converters import abinit_to_phonopy
 from abipy.dfpt.phonons import PhononBands, PhononDos
 from abipy.flowtk import events
 from abipy.flowtk.utils import File
 from emmet.core.math import Matrix3D
 from emmet.core.structure import StructureMetadata
-from monty.serialization import loadfn
 from pydantic import BaseModel, Field
 from pymatgen.core.structure import Structure
 from pymatgen.phonon.bandstructure import PhononBandStructureSymmLine
@@ -28,13 +26,7 @@ from pymatgen.phonon.dos import PhononDos as pmgPhononDos
 from atomate2.abinit.schemas.calculation import AbinitObject
 from atomate2.abinit.schemas.outfiles import AbinitStoredFile
 from atomate2.abinit.utils.common import get_event_report
-from atomate2.common.schemas.phonons import (
-    ForceConstants,
-    PhononComputationalSettings,
-    PhononJobDirs,
-    PhononUUIDs,
-    ThermalDisplacementData,
-)
+from atomate2.common.schemas.phonons import ThermalDisplacementData
 from atomate2.utils.path import get_uri
 
 logger = logging.getLogger(__name__)
@@ -78,25 +70,11 @@ class OutputDoc(BaseModel):
         The number of formula units per cell
     has_imaginary_modes: bool
         Whether the structure has imaginary modes
-    force_constants: ForceConstants
-        The force constants between every pair of atoms in the structure
     born: list
         The Born charges as computed from phonopy. Only for symmetrically
         different atoms
     epsilon_static: Matrix3D
         The high-frequency dielectric constant
-    supercell_matrix: Matrix3D
-        The matrix describing the supercell
-    primitive_matrix: Matrix3D
-        The matrix describing the relationship to the primitive cell
-    code: str
-        The code for the computation
-    phonopy_settings: PhononComputationalSettings
-        The settings for Phonopy
-    thermal_displacement_data: ThermalDisplacementData
-        The data of the computation of the thermal displacements
-    jobdirs: PhononJobDirs
-        The job directories
     """
 
     structure: Union[Structure] = Field(
@@ -162,11 +140,6 @@ class OutputDoc(BaseModel):
         None, description="if true, structure has imaginary modes"
     )
 
-    # needed, e.g. to compute Grueneisen parameter etc
-    force_constants: Optional[ForceConstants] = Field(
-        None, description="Force constants between every pair of atoms in the structure"
-    )
-
     born: Optional[list[Matrix3D]] = Field(
         None,
         description="Born charges as computed from phonopy. Only for symmetrically "
@@ -177,32 +150,9 @@ class OutputDoc(BaseModel):
         None, description="The high-frequency dielectric constant"
     )
 
-    supercell_matrix: Optional[Matrix3D] = Field(
-        None, description="matrix describing the supercell"
-    )
-    primitive_matrix: Optional[Matrix3D] = Field(
-        None, description="matrix describing relationship to primitive cell"
-    )
-
-    code: Optional[str] = Field(
-        None, description="String describing the code for the computation"
-    )
-
-    phonopy_settings: Optional[PhononComputationalSettings] = Field(
-        None, description="Field including settings for Phonopy"
-    )
-
     thermal_displacement_data: Optional[ThermalDisplacementData] = Field(
         None,
         description="Includes all data of the computation of the thermal displacements",
-    )
-
-    jobdirs: Optional[PhononJobDirs] = Field(
-        None, description="Field including all relevant job directories"
-    )
-
-    uuids: Optional[PhononUUIDs] = Field(
-        None, description="Field including all relevant uuids"
     )
 
     @classmethod
@@ -210,9 +160,9 @@ class OutputDoc(BaseModel):
         cls,
         dir_name: Path | str,
         abinit_anaddb_file: Path | str = "out_anaddb.nc",
+        abinit_analog_file: Path | str = "run.log",  # noqa: ARG003
         abinit_phbst_file: Path | str = "out_PHBST.nc",
         abinit_phdos_file: Path | str = "out_PHDOS.nc",
-        **other_files,
     ) -> OutputDoc:
         """
         Create a anaddb calculation document from a directory and file paths.
@@ -234,7 +184,7 @@ class OutputDoc(BaseModel):
 
         Returns
         -------
-        .Calculation
+        .OuputDoc
             An anaddb output document.
         """
         dir_name = Path(dir_name)
@@ -245,7 +195,10 @@ class OutputDoc(BaseModel):
         if abinit_anaddb_file.exists():
             abinit_anaddb = AnaddbNcFile.from_file(abinit_anaddb_file)
         else:
-            raise RuntimeError(f"The file {abinit_anaddb_file} is missing and is required to generate the output document")
+            raise RuntimeError(
+                f"The file {abinit_anaddb_file} is missing and is required \
+                to generate the output document"
+            )
         if abinit_phbst_file.exists():
             abinit_phbst = PhononBands.from_file(abinit_phbst_file)
         else:
@@ -265,13 +218,7 @@ class OutputDoc(BaseModel):
         else:
             phonon_bandstructure = None
         phonon_dos = abinit_phdos.to_pymatgen() if abinit_phbst else None
-        try:
-            phonopy = abinit_to_phonopy(
-                anaddbnc=abinit_anaddb,
-                supercell_matrix=loadfn(f"{dir_name}/anaddb_input.json")["ngqpt"],
-            )
-        except (AttributeError, KeyError):
-            phonopy = None
+
         if phonon_dos:
             temperatures = [int(t) for t in abinit_phdos.get_free_energy().mesh]
             free_energies = [
@@ -294,6 +241,8 @@ class OutputDoc(BaseModel):
             heat_capacities = None
             internal_energies = None
             entropies = None
+        born = getattr(abinit_anaddb, "bec", None)
+        born = born.values if born else None
         total_dft_energy = None  # TODO: get the total energy from the scf gs I guess ?
         formula_units = (
             structure.composition.num_atoms
@@ -305,18 +254,7 @@ class OutputDoc(BaseModel):
             phonon_bandstructure.has_imaginary_freq() if phonon_bandstructure else None
         )
 
-        if phonopy:
-            force_constants = ForceConstants(phonopy.force_constants)
-            born = phonopy.nac_params["born"].tolist()
-            supercell_matrix = phonopy.supercell_matrix.tolist()
-            primitive_matrix = phonopy.primitive_matrix.tolist()
-        else:
-            force_constants = None
-            born = None
-            supercell_matrix = None
-            primitive_matrix = None
         epsilon_static = None  # ???
-        code = "abinit"
 
         # for pm/V units (SI)
         dijk = (
@@ -350,18 +288,14 @@ class OutputDoc(BaseModel):
             volume_per_formula_unit=volume_per_formula_unit,
             formula_units=formula_units,
             has_imaginary_modes=has_imaginary_modes,
-            force_constants=force_constants,
             born=born,
             epsilon_static=epsilon_static,
-            supercell_matrix=supercell_matrix,
-            primitive_matrix=primitive_matrix,
-            code=code,
             dijk=dijk,
             epsinf=epsinf,
         )
 
 
-class AnaddbTaskDoc(StructureMetadata, extra="allow"):
+class AnaddbTaskDoc(StructureMetadata, extra="allow"):  # type: ignore[call-arg]
     """Definition of task document about an anaddb Job.
 
     Parameters
@@ -415,7 +349,6 @@ class AnaddbTaskDoc(StructureMetadata, extra="allow"):
         cls,
         dir_name: Path | str,
         additional_fields: dict[str, Any] = None,
-        abinit_anaddb_file: Path | str = "out_anaddb.nc",
         abinit_phbst_file: Path | str = "out_PHBST.nc",
         abinit_phdos_file: Path | str = "out_PHDOS.nc",
         abinit_analog_file: Path | str = "run.log",
@@ -450,9 +383,11 @@ class AnaddbTaskDoc(StructureMetadata, extra="allow"):
         if len(task_files) == 0:
             raise FileNotFoundError("No anaddb files found!")
         if len(task_files) > 1:
-            raise RuntimeError(f"Only one anaddb calculation expected. Found {len(task_files)}")
+            raise RuntimeError(
+                f"Only one anaddb calculation expected. Found {len(task_files)}"
+            )
 
-        std_task_files = list(task_files.values())[0]
+        std_task_files = next(iter(task_files.values()))
 
         report = get_event_report(ofile=File(abinit_analog_file))
         if not report.run_completed:

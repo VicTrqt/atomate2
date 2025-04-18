@@ -11,7 +11,7 @@ from abipy.abio.factories import (
     dtepert_from_gsinput,
     phononpert_from_gsinput,
 )
-from abipy.abio.input_tags import DDE, DDK, DTE, SCF, PH_Q_PERT
+from abipy.abio.input_tags import DDE, DDK, DTE, NSCF, PH_Q_PERT, SCF
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -64,7 +64,13 @@ class DteSetGenerator(StaticSetGenerator):
     factory: Callable = dtepert_from_gsinput
     pseudos: str | list[str] | PseudoTable | None = None
     restart_from_deps: tuple = (f"{DTE}:1WF|1DEN",)
-    prev_outputs_deps: tuple = (f"{SCF}:WFK", f"{DDE}:1WF", f"{DDE}:1DEN", f"{PH_Q_PERT}:1WF", f"{PH_Q_PERT}:1DEN")
+    prev_outputs_deps: tuple = (
+        f"{SCF}:WFK",
+        f"{DDE}:1WF",
+        f"{DDE}:1DEN",
+        f"{PH_Q_PERT}:1WF",
+        f"{PH_Q_PERT}:1DEN",
+    )
     factory_prev_inputs_kwargs: dict | None = field(
         default_factory=lambda: {"gs_input": (SCF,)}
     )
@@ -78,7 +84,20 @@ class PhononSetGenerator(StaticSetGenerator):
     factory: Callable = phononpert_from_gsinput
     pseudos: str | list[str] | PseudoTable | None = None
     restart_from_deps: tuple = (f"{SCF}:WFK",)
-    prev_outputs_deps: tuple = (f"{SCF}:WFK",)
+    prev_outputs_deps: tuple = (f"{SCF}:WFK", f"{NSCF}:WFQ")
     factory_prev_inputs_kwargs: dict | None = field(
         default_factory=lambda: {"gs_input": (SCF,)}
+    )
+
+
+@dataclass
+class NscfWfqSetGenerator(NonSCFSetGenerator):
+    """Class to generate a Non-SCF input set with a k point grid shifted by q."""
+
+    calc_type: str = "wfq"
+    user_abinit_settings: dict = field(
+        default_factory=lambda: {
+            "kptopt": 3,
+            "nqpt": 1,
+        }
     )

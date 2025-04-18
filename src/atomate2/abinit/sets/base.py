@@ -103,7 +103,6 @@ class AbinitMixinInputGenerator(InputGenerator):
                     )
                     input_files.extend(inp_files)
                     deps_irdvars.update(irdvars)
-
         return deps_irdvars, input_files
 
     @staticmethod
@@ -111,7 +110,7 @@ class AbinitMixinInputGenerator(InputGenerator):
         in_file = os.path.basename(out_filepath)
         in_file = in_file.replace(OUTDATAFILE_PREFIX, INDATAFILE_PREFIX, 1)
 
-        return os.path.basename(in_file).replace("WFQ", "WFK", 1)
+        return os.path.basename(in_file)  # .replace("WFQ", "WFK", 1)
 
     @staticmethod
     def resolve_dep_exts(prev_dir: str, exts: list[str]) -> tuple:
@@ -558,7 +557,6 @@ class AbinitInputGenerator(AbinitMixinInputGenerator):
                     )
                     input_files.extend(inp_files)
                     deps_irdvars.update(irdvars)
-
         return deps_irdvars, input_files
 
     def resolve_prev_inputs(
@@ -763,7 +761,13 @@ class AbinitInputGenerator(AbinitMixinInputGenerator):
         if self.user_kpoints_settings == {} and not kpoints_updates:
             return None
 
-        return get_ksampling(structure=structure, kpoints_updates=kpoints_updates, user_kpoints_settings=self.user_kpoints_settings, force_gamma=self.force_gamma, symprec=self.symprec)
+        return get_ksampling(
+            structure=structure,
+            kpoints_updates=kpoints_updates,
+            user_kpoints_settings=self.user_kpoints_settings,
+            force_gamma=self.force_gamma,
+            symprec=self.symprec,
+        )
 
 
 def _combine_kpoints(*kpoints_objects: KSampling) -> KSampling:
@@ -792,12 +796,13 @@ def _combine_kpoints(*kpoints_objects: KSampling) -> KSampling:
 
 
 def get_ksampling(
-        structure: Structure,
-        kpoints_updates: dict[str, Any] | None = None,
-        user_kpoints_settings: dict | KSampling | None = None,
-        force_gamma: bool = True,
-        symprec: float = SETTINGS.SYMPREC
+    structure: Structure,
+    kpoints_updates: dict[str, Any] | None = None,
+    user_kpoints_settings: dict | KSampling | None = None,
+    force_gamma: bool = True,
+    symprec: float = SETTINGS.SYMPREC,
 ) -> KSampling:
+    """Get kpoint file."""
     # use user setting if set otherwise default to base config settings
     if user_kpoints_settings != {}:
         kconfig = copy.deepcopy(user_kpoints_settings)
@@ -810,10 +815,10 @@ def get_ksampling(
         return kconfig
 
     explicit = (
-            kconfig.get("explicit")
-            or len(kconfig.get("added_kpoints", [])) > 0
-            or "zero_weighted_reciprocal_density" in kconfig
-            or "zero_weighted_line_density" in kconfig
+        kconfig.get("explicit")
+        or len(kconfig.get("added_kpoints", [])) > 0
+        or "zero_weighted_reciprocal_density" in kconfig
+        or "zero_weighted_line_density" in kconfig
     )
 
     base_kpoints = None

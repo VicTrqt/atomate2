@@ -1,11 +1,3 @@
-from shutil import which
-
-import pytest
-
-
-@pytest.mark.skipif(
-    which("abinit") is None, reason="abinit must be installed to run this test."
-)
 def test_run_silicon_carbide_shg(
     mock_abinit, mock_mrgddb, mock_anaddb, abinit_test_dir, clean_dir
 ):

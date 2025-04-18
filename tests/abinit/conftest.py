@@ -35,13 +35,6 @@ def load_pseudos(abinit_test_dir):
     abipy.flowtk.psrepos.REPOS_ROOT = str(abinit_test_dir / "pseudos")
 
 
-@pytest.fixture(scope="session", autouse=True)
-def load_manager(abinit_test_dir):
-    import abipy.flowtk.tasks
-
-    abipy.flowtk.tasks.TaskManager.USER_CONFIG_DIR = str(abinit_test_dir / "abipy")
-
-
 @pytest.fixture(scope="session")
 def abinit_integration_tests(pytestconfig):
     return pytestconfig.getoption("abinit_integration")
@@ -395,29 +388,10 @@ def check_anaddb_input_json(ref_path: str | Path):
 
     user = loadfn("anaddb_input.json")
     assert isinstance(user, AnaddbInput)
-    user_abivars = user.structure.to_abivars()
 
     ref = loadfn(ref_path / "inputs" / "anaddb_input.json.gz")
-    ref_abivars = ref.structure.to_abivars()
-    # Check structure
-    for k, user_v in user_abivars.items():
-        assert k in ref_abivars, f"{k = } is not a key of the reference input."
-        ref_v = ref_abivars[k]
-        if isinstance(user_v, str):
-            assert user_v == ref_v, f"{k = }-->{user_v = } versus {ref_v = }"
-        else:
-            assert np.allclose(user_v, ref_v), f"{k = }-->{user_v = } versus {ref_v = }"
-
-    # Check anaddb input
-    user_args = dict(user.as_dict()["anaddb_args"])
-    ref_args = dict(ref.as_dict()["anaddb_args"])
-    for k, user_v in user_args.items():
-        assert k in ref_args, f"{k = } is not a key of the reference input."
-        ref_v = ref_args[k]
-        if isinstance(user_v, str):
-            assert user_v == ref_v, f"{k = }-->{user_v = } versus {ref_v = }"
-        else:
-            assert np.allclose(user_v, ref_v), f"{k = }-->{user_v = } versus {ref_v = }"
+    assert user.structure == ref.structure
+    assert user == ref
 
 
 def copy_abinit_outputs(ref_path: str | Path):
