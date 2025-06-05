@@ -361,7 +361,7 @@ def generate_perts(
             ).points
 
         # check that qpt are consistent with kpt grid
-        outputs["dirs"]["wfq"] = [[]] * len(qpt_list)
+        outputs["dirs"]["wfq"] = [[] for _ in range(len(qpt_list))]
         if ngqpt is None or any(gsinput["ngkpt"] % ngqpt != 0):
             # find which q points are needed and build nscf inputs to calculate the WFQ
             kpts = gsinput.abiget_ibz(shiftk=(0, 0, 0), kptopt=3).points.tolist()
