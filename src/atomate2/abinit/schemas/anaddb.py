@@ -18,6 +18,7 @@ from abipy.flowtk import events
 from abipy.flowtk.utils import File
 from emmet.core.math import Matrix3D
 from emmet.core.structure import StructureMetadata
+from emmet.core.utils import get_num_formula_units
 from pydantic import BaseModel, Field
 from pymatgen.core.structure import Structure
 from pymatgen.phonon.bandstructure import PhononBandStructureSymmLine
@@ -75,7 +76,7 @@ class OutputDoc(BaseModel):
         The high-frequency dielectric constant
     """
 
-    structure: Union[Structure] = Field(
+    structure: Optional[Structure] = Field(
         None, description="The final structure from the calculation"
     )
     dijk: Optional[list] = Field(
@@ -88,24 +89,20 @@ class OutputDoc(BaseModel):
         None,
         description="Phonon band structure object.",
     )
-
     phonon_dos: Optional[pmgPhononDos] = Field(
         None,
         description="Phonon density of states object.",
     )
-
     free_energies: Optional[list[float]] = Field(
         None,
         description="vibrational part of the free energies in J/mol per "
         "formula unit for temperatures in temperature_list",
     )
-
     heat_capacities: Optional[list[float]] = Field(
         None,
         description="heat capacities in J/K/mol per "
         "formula unit for temperatures in temperature_list",
     )
-
     internal_energies: Optional[list[float]] = Field(
         None,
         description="internal energies in J/mol per "
@@ -116,14 +113,12 @@ class OutputDoc(BaseModel):
         description="entropies in J/(K*mol) per formula unit"
         "for temperatures in temperature_list ",
     )
-
     temperatures: Optional[list[int]] = Field(
         None,
         description="temperatures at which the vibrational"
         " part of the free energies"
         " and other properties have been computed",
     )
-
     volume_per_formula_unit: Optional[float] = Field(
         None, description="volume per formula unit in Angstrom**3"
     )
@@ -238,10 +233,8 @@ class OutputDoc(BaseModel):
         born = getattr(abinit_anaddb, "bec", None)
         born = born.values if born else None
 
-        formula_units = (
-            structure.composition.num_atoms
-            / structure.composition.reduced_composition.num_atoms
-        )
+        formula_units = get_num_formula_units(structure.composition)
+
         volume_per_formula_unit = structure.volume / formula_units
 
         has_imaginary_modes = (
