@@ -396,7 +396,7 @@ class AnaddbPhbandsDOSInputGenerator(AnaddbInputGenerator):
     """
 
     factory: Callable = anaddbinp_phbands_dos
-    factory_kwargs: dict = field(default_factory=lambda: {"nqsmall": 15, "with_ifc": 1})
+    factory_kwargs: dict = field(default_factory=lambda: {"nqsmall": 15})
 
     def get_anaddb_input(
         self,
@@ -406,6 +406,7 @@ class AnaddbPhbandsDOSInputGenerator(AnaddbInputGenerator):
         factory_kwargs: dict | None = None,
         input_files: list | None = None,
     ) -> AnaddbInput:
+        """Determine ngqpt used in DFPT calculation to be used in anaddb."""
         factory_kwargs = factory_kwargs or {}
 
         if "ngqpt" not in factory_kwargs and "ngqpt" not in self.factory_kwargs:
@@ -421,4 +422,9 @@ class AnaddbPhbandsDOSInputGenerator(AnaddbInputGenerator):
             else:
                 raise RuntimeError("Could not determine the DDB file to read ngqpt")
 
-        return super().get_anaddb_input(structure=structure, prev_outputs=prev_outputs, abinit_settings=abinit_settings, factory_kwargs=factory_kwargs)
+        return super().get_anaddb_input(
+            structure=structure,
+            prev_outputs=prev_outputs,
+            abinit_settings=abinit_settings,
+            factory_kwargs=factory_kwargs,
+        )
