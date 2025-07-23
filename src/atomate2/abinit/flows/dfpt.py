@@ -5,29 +5,21 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-import abipy.core.abinit_units as abu
 import numpy as np
 from abipy.abio.factories import scf_for_phonons
 from jobflow import Flow, Maker
 
-from atomate2.abinit.jobs.anaddb import (
-    AnaddbDfptDteMaker,
-    AnaddbMaker,
-    AnaddbPhBandsDOSMaker,
-)
-from atomate2.abinit.jobs.core import StaticMaker, StaticMakerforPhonons
+from atomate2.abinit.jobs.anaddb import AnaddbMaker
+from atomate2.abinit.jobs.core import StaticMaker
 from atomate2.abinit.jobs.mrgddb import MrgddbMaker
-from atomate2.abinit.jobs.mrgdv import MrgdvMaker
 from atomate2.abinit.jobs.response import (
     DdeMaker,
     DdkMaker,
     DteMaker,
-    PhononResponseMaker,
     WfqMaker,
     generate_perts,
 )
-from atomate2.abinit.powerups import update_user_abinit_settings
-from atomate2.abinit.sets.core import ShgStaticSetGenerator, StaticSetGenerator
+from atomate2.abinit.sets.core import StaticSetGenerator
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -183,7 +175,7 @@ class DfptFlowMaker(Maker):
                     perturbation=pert,
                     prev_outputs=static_job.output.dir_name,
                 )
-                ddk_job.append_name(f"{ipert+1}/{len(perturbations)}")
+                ddk_job.append_name(f"{ipert + 1}/{len(perturbations)}")
 
                 ddk_jobs.append(ddk_job)
                 outputs["dirs"].append(ddk_job.output.dir_name)
@@ -261,142 +253,3 @@ class DfptFlowMaker(Maker):
         return Flow(
             jobs, output=[j.output for j in jobs], name=self.name
         )  # TODO: fix outputs
-
-
-@dataclass
-class ShgFlowMaker(DfptFlowMaker):
-    """
-    Maker to compute the static DFPT second-harmonic generation tensor.
-
-    Parameters
-    ----------
-    name : str
-        Name of the flows produced by this maker.
-    scissor: float
-        A rigid shift of the conduction bands in eV.
-    """
-
-    name: str = "DFPT Chi2 SHG"
-    anaddb_maker: Maker | None = field(default_factory=AnaddbDfptDteMaker)
-    use_dde_sym: bool = False
-    static_maker: BaseAbinitMaker = field(
-        default_factory=lambda: StaticMaker(input_set_generator=ShgStaticSetGenerator())
-    )
-    scissor: float | None = None
-
-    @classmethod
-    def with_phonons(cls, **kwargs) -> ShgFlowMaker:
-        """Run DTE with phonon-like perturbations."""
-        maker = cls(**kwargs)
-        maker.phonon_maker = PhononResponseMaker()
-        maker.ngqpt = [1, 1, 1]
-        return maker
-
-    def make(
-        self,
-        structure: Structure | None = None,
-        restart_from: str | Path | None = None,
-    ) -> Flow:
-        """
-        Create a DFPT flow.
-
-        Parameters
-        ----------
-        structure : Structure
-            A pymatgen structure object.
-        restart_from : str or Path or None
-            One previous directory to restart from.
-
-        Returns
-        -------
-        Flow
-            A DFPT flow
-        """
-        shg_flow = super().make(structure=structure, restart_from=restart_from)
-
-        if self.scissor:
-            shg_flow = update_user_abinit_settings(
-                shg_flow,
-                {"dfpt_sciss": self.scissor * abu.eV_Ha},
-                name_filter="Scf calculation",
-            )
-
-        return shg_flow
-
-
-@dataclass
-class PhononMaker(DfptFlowMaker):
-    """
-    Maker to generate a phonon band structure and phonon DOS flow with abinit.
-
-    Parameters
-    ----------
-    name : str
-        Name of the flows produced by this maker.
-    with_dde : bool
-        True if the DDE calculations should be included, False otherwise.
-    run_anaddb : bool
-        True if the anaddb calculations should be included, False otherwise.
-    run_mrgddb : bool
-        True if the merge of DDB files should be included, False otherwise.
-    run_mrgdv : bool
-        True if the merge of POT files should be included, False otherwise.
-    """
-
-    name: str = "Phonon Flow"
-    with_dde: bool = True
-    run_anaddb: bool = True
-    run_mrgdv: bool = False
-    static_maker: BaseAbinitMaker = field(
-        default_factory=lambda: StaticMakerforPhonons(
-            input_set_generator=StaticSetGenerator(factory=scf_for_phonons)
-        )
-    )
-    phonon_maker: BaseAbinitMaker = field(default_factory=PhononResponseMaker)
-    mrgdv_maker: BaseAbinitMaker | None = field(default_factory=MrgdvMaker)
-    anaddb_maker: BaseAbinitMaker | None = field(default_factory=AnaddbPhBandsDOSMaker)
-    dte_maker: BaseAbinitMaker | None = None
-    qptopt: int | None = 1
-
-    def __post_init__(self) -> None:
-        """Process post-init configuration."""
-        if not self.with_dde:
-            """
-            To turn off the DDE calculations, turn off DDK as well.
-            If a DDK maker is provided, it will be removed
-            """
-            self.ddk_maker = None
-            self.dde_maker = None
-
-        if not self.run_mrgdv:
-            """Turn off the merge of DDB files"""
-            self.mrgdv_maker = None
-
-        if not self.run_anaddb:
-            """Turn off the anaddb calculations"""
-            self.anaddb_maker = None
-
-    def make(
-        self,
-        structure: Structure | None = None,
-        restart_from: str | Path | None = None,
-    ) -> Flow:
-        """
-        Create a phonon flow.
-
-        Parameters
-        ----------
-        structure : Structure
-            A pymatgen structure object.
-        restart_from : str or Path or None
-            One previous directory to restart from.
-
-        Returns
-        -------
-        Flow
-            A phonon flow.
-        """
-        return super().make(
-            structure=structure,
-            restart_from=restart_from,
-        )

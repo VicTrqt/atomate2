@@ -469,7 +469,7 @@ def get_jobs(
                 f", q = {qpt_str}, idir = {pert['idir']}, ipert = {pert['ipert']}"
             )
         else:
-            rf_job.append_name(f"{ipert+1}/{len(perturbations)}")
+            rf_job.append_name(f"{ipert + 1}/{len(perturbations)}")
 
         rf_jobs.append(rf_job)
 
@@ -509,9 +509,9 @@ def run_rf(
 
         if is_phonon:
             qpt_str = f"{pert['qpt'][0]:.2f},{pert['qpt'][1]:.2f},{pert['qpt'][2]:.2f}"
-            rf_job.append_name(f", q = {qpt_str} ({ipert+1}/{len(perturbations)})")
+            rf_job.append_name(f", q = {qpt_str} ({ipert + 1}/{len(perturbations)})")
         else:
-            rf_job.append_name(f"{ipert+1}/{len(perturbations)}")
+            rf_job.append_name(f"{ipert + 1}/{len(perturbations)}")
 
         rf_jobs.append(rf_job)
         outputs["dirs"].append(rf_job.output.dir_name)  # TODO: determine outputs
