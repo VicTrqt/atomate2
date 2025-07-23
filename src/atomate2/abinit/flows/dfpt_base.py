@@ -1,4 +1,4 @@
-"""DFPT abinit flow makers."""
+"""Base DFPT abinit flow makers."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ import numpy as np
 from abipy.abio.factories import scf_for_phonons
 from jobflow import Flow, Maker
 
-from atomate2.abinit.jobs.anaddb import AnaddbMaker
 from atomate2.abinit.jobs.core import StaticMaker
 from atomate2.abinit.jobs.mrgddb import MrgddbMaker
 from atomate2.abinit.jobs.response import (
@@ -91,7 +90,7 @@ class DfptFlowMaker(Maker):
     phonon_maker: BaseAbinitMaker | None = None  # |
     mrgddb_maker: Maker | None = field(default_factory=MrgddbMaker)  # |
     mrgdv_maker: Maker | None = None  # |
-    anaddb_maker: Maker | None = field(default_factory=AnaddbMaker)  # |
+    anaddb_maker: Maker | None = None  # |
     use_dde_sym: bool = True
     dte_skip_permutations: bool | None = False
     qpt_list: list[list] | None = None
