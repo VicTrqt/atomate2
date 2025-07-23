@@ -27,7 +27,6 @@ from pymatgen.phonon.dos import PhononDos as pmgPhononDos
 from atomate2.abinit.schemas.calculation import AbinitObject
 from atomate2.abinit.schemas.outfiles import AbinitStoredFile
 from atomate2.abinit.utils.common import get_event_report
-from atomate2.common.schemas.phonons import ThermalDisplacementData
 from atomate2.utils.path import get_uri
 
 logger = logging.getLogger(__name__)
@@ -42,7 +41,7 @@ class OutputDoc(BaseModel):
         The final pymatgen Structure of the final system
     dijk: list (3x3x3)
         The conventional static SHG tensor in pm/V (Chi^(2)/2)
-    epsinf: list (3x3)
+    e_electronic: list (3x3)
         The electronic contribution to the dielectric tensor
     phonon_bandstructure: PhononBandStructureSymmLine
         The phonon band structure object.
@@ -72,8 +71,6 @@ class OutputDoc(BaseModel):
     born: list
         The Born charges as computed from phonopy. Only for symmetrically
         different atoms
-    epsilon_static: Matrix3D
-        The high-frequency dielectric constant
     """
 
     structure: Optional[Structure] = Field(
@@ -82,7 +79,7 @@ class OutputDoc(BaseModel):
     dijk: Optional[list] = Field(
         None, description="Conventional SHG tensor in pm/V (Chi^(2)/2)"
     )
-    epsinf: Optional[list] = Field(
+    e_electronic: Optional[list] = Field(
         None, description="Electronic contribution to the dielectric tensor"
     )
     phonon_bandstructure: Optional[PhononBandStructureSymmLine] = Field(
@@ -133,15 +130,6 @@ class OutputDoc(BaseModel):
         None,
         description="Born charges as computed from phonopy. Only for symmetrically "
         "different atoms",
-    )
-
-    epsilon_static: Optional[Matrix3D] = Field(
-        None, description="The high-frequency dielectric constant"
-    )
-
-    thermal_displacement_data: Optional[ThermalDisplacementData] = Field(
-        None,
-        description="Includes all data of the computation of the thermal displacements",
     )
 
     @classmethod
@@ -255,7 +243,7 @@ class OutputDoc(BaseModel):
             if abinit_anaddb.dchide is not None and abinit_anaddb.dchide.any()
             else None
         )
-        epsinf = (
+        e_electronic = (
             list(abinit_anaddb.epsinf)
             if abinit_anaddb.epsinf is not None and abinit_anaddb.epsinf.any()
             else None
@@ -274,7 +262,7 @@ class OutputDoc(BaseModel):
             has_imaginary_modes=has_imaginary_modes,
             born=born,
             dijk=dijk,
-            epsinf=epsinf,
+            e_electronic=e_electronic,
         )
 
 
