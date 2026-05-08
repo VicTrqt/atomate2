@@ -3,7 +3,7 @@
 import copy
 import logging
 from pathlib import Path
-from typing import Optional, Union
+from typing import Union
 
 import numpy as np
 from emmet.core.math import Matrix3D
@@ -16,7 +16,7 @@ from phonopy.units import VaspToTHz
 from pydantic import BaseModel, Field
 from pymatgen.core import Structure
 from pymatgen.io.phonopy import (
-    get_ph_bs_symm_line,
+    get_ph_bs_symm_line_from_dict,
     get_ph_dos,
     get_phonopy_structure,
     get_pmg_structure,
@@ -27,6 +27,7 @@ from pymatgen.phonon.dos import PhononDos
 from pymatgen.phonon.plotter import PhononBSPlotter, PhononDosPlotter
 from pymatgen.symmetry.bandstructure import HighSymmKpath
 from pymatgen.symmetry.kpath import KPathSeek
+from ruamel.yaml import YAML
 from typing_extensions import Self
 
 from atomate2.aims.utils.units import omegaToTHz
@@ -53,7 +54,7 @@ def get_factor(code: str) -> float:
     ValueError
         If code is not defined
     """
-    if code in ["ase", "forcefields", "vasp"]:
+    if code in ["ase", "forcefields", "vasp", "torchsim"]:
         return VaspToTHz
     if code == "aims":
         return omegaToTHz  # Based on CODATA 2002
@@ -78,15 +79,15 @@ class ThermalDisplacementData(BaseModel):
         "cutoff frequency in THz to avoid numerical issues in the "
         "computation of the thermal displacement parameters"
     )
-    thermal_displacement_matrix_cif: Optional[list[list[Matrix3D]]] = Field(
+    thermal_displacement_matrix_cif: list[list[Matrix3D]] | None = Field(
         None, description="field including thermal displacement matrices in CIF format"
     )
-    thermal_displacement_matrix: Optional[list[list[Matrix3D]]] = Field(
+    thermal_displacement_matrix: list[list[Matrix3D]] | None = Field(
         None,
         description="field including thermal displacement matrices in Cartesian "
         "coordinate system",
     )
-    temperatures_thermal_displacements: Optional[list[int]] = Field(
+    temperatures_thermal_displacements: list[int] | None = Field(
         None,
         description="temperatures at which the thermal displacement matrices"
         "have been computed",
@@ -96,14 +97,12 @@ class ThermalDisplacementData(BaseModel):
 class PhononUUIDs(BaseModel):
     """Collection to save all uuids connected to the phonon run."""
 
-    optimization_run_uuid: Optional[str] = Field(
-        None, description="optimization run uuid"
-    )
-    displacements_uuids: Optional[list[str]] = Field(
+    optimization_run_uuid: str | None = Field(None, description="optimization run uuid")
+    displacements_uuids: list[str] | None = Field(
         None, description="The uuids of the displacement jobs."
     )
-    static_run_uuid: Optional[str] = Field(None, description="static run uuid")
-    born_run_uuid: Optional[str] = Field(None, description="born run uuid")
+    static_run_uuid: str | None = Field(None, description="static run uuid")
+    born_run_uuid: str | None = Field(None, description="born run uuid")
 
 
 class ForceConstants(MSONable):
@@ -116,19 +115,19 @@ class ForceConstants(MSONable):
 class PhononJobDirs(BaseModel):
     """Collection to save all job directories relevant for the phonon run."""
 
-    displacements_job_dirs: Optional[list[Optional[str]]] = Field(
+    displacements_job_dirs: list[str | None] | None = Field(
         None, description="The directories where the displacement jobs were run."
     )
-    static_run_job_dir: Optional[Optional[str]] = Field(
+    static_run_job_dir: str | None = Field(
         None, description="Directory where static run was performed."
     )
-    born_run_job_dir: Optional[str] = Field(
+    born_run_job_dir: str | None = Field(
         None, description="Directory where born run was performed."
     )
-    optimization_run_job_dir: Optional[str] = Field(
+    optimization_run_job_dir: str | None = Field(
         None, description="Directory where optimization run was performed."
     )
-    taskdoc_run_job_dir: Optional[str] = Field(
+    taskdoc_run_job_dir: str | None = Field(
         None, description="Directory where task doc was generated."
     )
 
@@ -136,104 +135,104 @@ class PhononJobDirs(BaseModel):
 class PhononBSDOSDoc(StructureMetadata, extra="allow"):  # type: ignore[call-arg]
     """Collection of all data produced by the phonon workflow."""
 
-    structure: Optional[Structure] = Field(
+    structure: Structure | None = Field(
         None, description="Structure of Materials Project."
     )
 
-    phonon_bandstructure: Optional[PhononBandStructureSymmLine] = Field(
+    phonon_bandstructure: PhononBandStructureSymmLine | None = Field(
         None,
         description="Phonon band structure object.",
     )
 
-    phonon_dos: Optional[PhononDos] = Field(
+    phonon_dos: PhononDos | None = Field(
         None,
         description="Phonon density of states object.",
     )
 
-    free_energies: Optional[list[float]] = Field(
+    free_energies: list[float] | None = Field(
         None,
         description="vibrational part of the free energies in J/mol per "
         "formula unit for temperatures in temperature_list",
     )
 
-    heat_capacities: Optional[list[float]] = Field(
+    heat_capacities: list[float] | None = Field(
         None,
         description="heat capacities in J/K/mol per "
         "formula unit for temperatures in temperature_list",
     )
 
-    internal_energies: Optional[list[float]] = Field(
+    internal_energies: list[float] | None = Field(
         None,
         description="internal energies in J/mol per "
         "formula unit for temperatures in temperature_list",
     )
-    entropies: Optional[list[float]] = Field(
+    entropies: list[float] | None = Field(
         None,
         description="entropies in J/(K*mol) per formula unit"
         "for temperatures in temperature_list ",
     )
 
-    temperatures: Optional[list[int]] = Field(
+    temperatures: list[int] | None = Field(
         None,
         description="temperatures at which the vibrational"
         " part of the free energies"
         " and other properties have been computed",
     )
 
-    total_dft_energy: Optional[float] = Field(
+    total_dft_energy: float | None = Field(
         None, description="total DFT energy per formula unit in eV"
     )
 
-    volume_per_formula_unit: Optional[float] = Field(
+    volume_per_formula_unit: float | None = Field(
         None, description="volume per formula unit in Angstrom**3"
     )
 
-    formula_units: Optional[int] = Field(None, description="Formula units per cell")
+    formula_units: int | None = Field(None, description="Formula units per cell")
 
-    has_imaginary_modes: Optional[bool] = Field(
+    has_imaginary_modes: bool | None = Field(
         None, description="if true, structure has imaginary modes"
     )
 
     # needed, e.g. to compute Grueneisen parameter etc
-    force_constants: Optional[ForceConstants] = Field(
+    force_constants: ForceConstants | None = Field(
         None, description="Force constants between every pair of atoms in the structure"
     )
 
-    born: Optional[list[Matrix3D]] = Field(
+    born: list[Matrix3D] | None = Field(
         None,
         description="Born charges as computed from phonopy. Only for symmetrically "
         "different atoms",
     )
 
-    epsilon_static: Optional[Matrix3D] = Field(
+    epsilon_static: Matrix3D | None = Field(
         None, description="The high-frequency dielectric constant"
     )
 
-    supercell_matrix: Optional[Matrix3D] = Field(
+    supercell_matrix: Matrix3D | None = Field(
         None, description="matrix describing the supercell"
     )
-    primitive_matrix: Optional[Matrix3D] = Field(
+    primitive_matrix: Matrix3D | None = Field(
         None, description="matrix describing relationship to primitive cell"
     )
 
-    code: Optional[str] = Field(
+    code: str | None = Field(
         None, description="String describing the code for the computation"
     )
 
-    phonopy_settings: Optional[PhononComputationalSettings] = Field(
+    phonopy_settings: PhononComputationalSettings | None = Field(
         None, description="Field including settings for Phonopy"
     )
 
-    thermal_displacement_data: Optional[ThermalDisplacementData] = Field(
+    thermal_displacement_data: ThermalDisplacementData | None = Field(
         None,
         description="Includes all data of the computation of the thermal displacements",
     )
 
-    jobdirs: Optional[PhononJobDirs] = Field(
+    jobdirs: PhononJobDirs | None = Field(
         None, description="Field including all relevant job directories"
     )
 
-    uuids: Optional[PhononUUIDs] = Field(
+    uuids: PhononUUIDs | None = Field(
         None, description="Field including all relevant uuids"
     )
 
@@ -309,10 +308,10 @@ class PhononBSDOSDoc(StructureMetadata, extra="allow"):  # type: ignore[call-arg
             cell,
             supercell_matrix,
             primitive_matrix=primitive_matrix,
-            factor=factor,
             symprec=symprec,
             is_symmetry=sym_reduce,
         )
+        phonon.unit_conversion_factor = factor
         phonon.generate_displacements(distance=displacement)
         set_of_forces = [np.array(forces) for forces in displacement_data["forces"]]
 
@@ -395,8 +394,10 @@ class PhononBSDOSDoc(StructureMetadata, extra="allow"):  # type: ignore[call-arg
             is_band_connection=kwargs.get("band_structure_eigenvectors", False),
         )
         phonon.write_yaml_band_structure(filename=filename_band_yaml)
-        bs_symm_line = get_ph_bs_symm_line(
-            filename_band_yaml, labels_dict=kpath_dict, has_nac=born is not None
+        bs_symm_line = get_ph_bs_symm_line_from_dict(
+            YAML(typ="safe").load(Path(filename_band_yaml).read_text()),
+            has_nac=born is not None,
+            labels_dict=kpath_dict,
         )
         new_plotter = PhononBSPlotter(bs=bs_symm_line)
         new_plotter.save_plot(
@@ -449,6 +450,7 @@ class PhononBSDOSDoc(StructureMetadata, extra="allow"):  # type: ignore[call-arg
         new_plotter_dos.add_dos(label="total", dos=dos)
         new_plotter_dos.save_plot(
             filename=kwargs.get("filename_dos", "phonon_dos.pdf"),
+            img_format=kwargs.get("filetype_dos", "pdf"),
             units=kwargs.get("units", "THz"),
         )
 

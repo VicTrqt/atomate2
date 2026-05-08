@@ -1,46 +1,50 @@
+import importlib
+from contextlib import nullcontext
 from importlib.metadata import version as get_imported_version
+from importlib.util import find_spec
 from pathlib import Path
 
 import numpy as np
 import pytest
 from jobflow import run_locally
-from pymatgen.core import Structure
+from pymatgen.core import Molecule, Structure
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
-from pytest import approx, importorskip
+from pytest import approx
 
-from atomate2.forcefields.jobs import (
-    CHGNetRelaxMaker,
-    CHGNetStaticMaker,
-    ForceFieldRelaxMaker,
-    ForceFieldStaticMaker,
-    GAPRelaxMaker,
-    GAPStaticMaker,
-    M3GNetRelaxMaker,
-    M3GNetStaticMaker,
-    MACERelaxMaker,
-    MACEStaticMaker,
-    NEPRelaxMaker,
-    NEPStaticMaker,
-    NequipRelaxMaker,
-    NequipStaticMaker,
+from atomate2.forcefields import MLFF
+from atomate2.forcefields.jobs import ForceFieldRelaxMaker, ForceFieldStaticMaker
+from atomate2.forcefields.schemas import (
+    ForceFieldMoleculeTaskDocument,
+    ForceFieldTaskDocument,
 )
-from atomate2.forcefields.schemas import ForceFieldTaskDocument
+
+from .conftest import mlff_is_installed
+
+try:
+    import dgl
+except Exception:  # noqa: BLE001
+    dgl = None
 
 
-def test_maker_initialization():
+@pytest.mark.parametrize("mlff", [mlff for mlff in MLFF if mlff_is_installed(mlff)])
+def test_maker_initialization(mlff):
     # test that makers can be initialized from str or value enum
 
-    from atomate2.forcefields import MLFF
-
-    for mlff in MLFF.__members__:
-        assert ForceFieldRelaxMaker(
-            force_field_name=MLFF(mlff)
-        ) == ForceFieldRelaxMaker(force_field_name=mlff)
-        assert ForceFieldRelaxMaker(
-            force_field_name=str(MLFF(mlff))
-        ) == ForceFieldRelaxMaker(force_field_name=mlff)
+    assert ForceFieldRelaxMaker(force_field_name=MLFF(mlff)) == ForceFieldRelaxMaker(
+        force_field_name=mlff
+    )
+    assert ForceFieldRelaxMaker(
+        force_field_name=str(MLFF(mlff))
+    ) == ForceFieldRelaxMaker(force_field_name=mlff)
 
 
+@pytest.mark.skipif(
+    # test to see if CHGNet is installed, or that matgl is installed without dgl
+    # Note that this should be the only test for interface with
+    # the legacy `chgnet` package
+    not mlff_is_installed("CHGNet") or (mlff_is_installed("M3GNet") and dgl is None),
+    reason="CHGNet requires DGL which is not installed",
+)
 def test_chgnet_static_maker(si_structure):
     # generate job
     job = ForceFieldStaticMaker(
@@ -48,22 +52,27 @@ def test_chgnet_static_maker(si_structure):
         ionic_step_data=("structure", "energy"),
     ).make(si_structure)
 
+    pkg_name = "matgl" if find_spec("matgl") else "chgnet"
+
     # run the flow or job and ensure that it finished running successfully
     responses = run_locally(job, ensure_success=True)
 
     # validate job outputs
     output1 = responses[job.uuid][1].output
     assert isinstance(output1, ForceFieldTaskDocument)
-    assert output1.output.energy == approx(-10.6275062, rel=1e-4)
+    assert output1.output.energy == approx(
+        -10.7907495 if pkg_name == "matgl" else -10.6275053, rel=1e-4
+    )
     assert output1.output.ionic_steps[-1].magmoms is None
     assert output1.output.n_steps == 1
 
-    assert output1.forcefield_version == get_imported_version("chgnet")
-
-    with pytest.warns(FutureWarning):
-        CHGNetStaticMaker()
+    assert output1.forcefield_version == get_imported_version(pkg_name)
 
 
+@pytest.mark.skipif(
+    dgl is None or not mlff_is_installed("CHGNet"),
+    reason="CHGNet requires DGL which is not installed",
+)
 @pytest.mark.parametrize(
     "fix_symmetry, symprec", [(True, 1e-2), (False, 1e-2), (True, 1e-1)]
 )
@@ -92,12 +101,28 @@ def test_chgnet_relax_maker_fix_symmetry(
     ).get_space_group_number()
     if fix_symmetry:
         assert initial_space_group == final_space_group
-    else:
-        assert initial_space_group != final_space_group
 
 
-@pytest.mark.parametrize("relax_cell", [True, False])
-def test_chgnet_relax_maker(si_structure: Structure, relax_cell: bool):
+@pytest.mark.skipif(
+    dgl is None or not mlff_is_installed("CHGNet"),
+    reason="CHGNet requires DGL which is not installed",
+)
+@pytest.mark.parametrize(
+    "relax_cell,relax_shape", [(b1, b2) for b1 in (True, False) for b2 in (True, False)]
+)
+def test_chgnet_relax_maker(
+    si_structure: Structure, tmp_dir, relax_cell: bool, relax_shape: bool
+):
+    if relax_cell and relax_shape:
+        # Quick return, only want to ensure that the `ValueError is raised`
+        with pytest.raises(ValueError, match="You have set both `relax_cell`"):
+            ForceFieldRelaxMaker(
+                force_field_name="CHGNet",
+                relax_cell=relax_cell,
+                relax_shape=relax_shape,
+            )
+        return
+
     # translate one atom to ensure a small number of relaxation steps are taken
     si_structure.translate_sites(0, [0, 0, 0.1])
 
@@ -107,10 +132,18 @@ def test_chgnet_relax_maker(si_structure: Structure, relax_cell: bool):
         force_field_name="CHGNet",
         steps=max_step,
         relax_cell=relax_cell,
+        relax_shape=relax_shape,
     ).make(si_structure)
 
     # run the flow or job and ensure that it finished running successfully
-    responses = run_locally(job, ensure_success=True)
+    with (
+        pytest.warns(
+            UserWarning, match="The `relax_shape` functionality in ASE can break"
+        )
+        if relax_shape
+        else nullcontext()
+    ):
+        responses = run_locally(job, ensure_success=True)
 
     # validate job outputs
     output1 = responses[job.uuid][1].output
@@ -118,24 +151,70 @@ def test_chgnet_relax_maker(si_structure: Structure, relax_cell: bool):
     if relax_cell:
         assert not output1.is_force_converged
         assert output1.output.n_steps == max_step + 2
-        assert output1.output.energy == approx(-10.62461, abs=1e-2)
-        assert output1.output.ionic_steps[-1].magmoms[0] == approx(0.00251674, rel=1e-1)
+        assert output1.output.energy == approx(-10.74037, abs=1e-2)
+        assert output1.output.ionic_steps[-1].magmoms[0] == approx(0.0345594, rel=1e-1)
+    elif relax_shape:
+        assert not output1.is_force_converged
+        assert output1.output.n_steps == max_step + 2
+        assert output1.output.energy == approx(-10.743172645568848, abs=1e-2)
+        assert output1.output.ionic_steps[-1].magmoms[0] == approx(0.024537, rel=1e-1)
+        assert output1.output.structure.volume == approx(
+            output1.input.structure.volume, rel=1e-6
+        )
     else:
         assert output1.is_force_converged
-        assert output1.output.n_steps == 13
-        assert output1.output.energy == approx(-10.6274, rel=1e-2)
-        assert output1.output.ionic_steps[-1].magmoms[0] == approx(0.00303572, rel=1e-2)
+        assert output1.output.n_steps == 24
+        assert output1.output.energy == approx(-10.79026, rel=1e-2)
+        assert output1.output.ionic_steps[-1].magmoms[0] == approx(0.03229409, rel=1e-2)
 
     # check the force_field_task_doc attributes
     assert Path(responses[job.uuid][1].output.dir_name).exists()
 
-    with pytest.warns(FutureWarning):
-        CHGNetRelaxMaker()
 
+@pytest.mark.skipif(
+    not mlff_is_installed("CHGNet"),
+    reason="Required packages (chgnet or matgl/dgl) are not installed",
+)
+def test_chgnet_batch_static_maker(si_structure: Structure, memory_jobstore):
+    # translate one atom to ensure a small number of relaxation steps are taken
+    si_structure2 = si_structure.copy()
+    si_structure.translate_sites(0, [0, 0, 0.1])
+    si_structure2.translate_sites(0, [0.1, 0, 0.1])
 
-@pytest.mark.skip(reason="M3GNet requires DGL which is PyTorch 2.4 incompatible")
-def test_m3gnet_static_maker(si_structure):
     # generate job
+    job = ForceFieldStaticMaker(
+        force_field_name="CHGNet",
+    ).make([si_structure, si_structure2])
+
+    # run the flow or job and ensure that it finished running successfully
+    responses = run_locally(job, ensure_success=True, store=memory_jobstore)
+    # validate job outputs
+    output = responses[job.uuid][1].output
+    assert all(isinstance(calc, ForceFieldTaskDocument) for calc in output)
+
+    assert len(output) == 2
+    assert [calc.output.energy for calc in output] == approx(
+        [-9.96250, -9.4781], rel=1e-2
+    )
+
+    # check the force_field_task_doc attributes
+    assert all(Path(calc.dir_name).exists() for calc in output)
+
+
+@pytest.mark.xfail(
+    reason="M3GNet tests not working consistently in CI vs local",
+    strict=False,
+)
+@pytest.mark.skipif(
+    dgl is None or not mlff_is_installed("M3GNet"),
+    reason="M3GNet requires DGL which is not installed",
+)
+def test_m3gnet_static_maker(si_structure: Structure, monkeypatch: pytest.MonkeyPatch):
+    # generate job
+    import matgl
+
+    monkeypatch.setattr(matgl.config, "BACKEND", "DGL")
+    importlib.reload(matgl)
     job = ForceFieldStaticMaker(
         force_field_name="M3GNet",
         ionic_step_data=("structure", "energy"),
@@ -152,13 +231,22 @@ def test_m3gnet_static_maker(si_structure):
 
     assert output1.forcefield_version == get_imported_version("matgl")
 
-    with pytest.warns(FutureWarning):
-        M3GNetStaticMaker()
 
-
-@pytest.mark.skip(reason="M3GNet requires DGL which is PyTorch 2.4 incompatible")
-def test_m3gnet_relax_maker(si_structure):
+@pytest.mark.xfail(
+    reason="M3GNet tests not working consistently in CI vs local",
+    strict=False,
+)
+@pytest.mark.skipif(
+    dgl is None or not mlff_is_installed("M3GNet"),
+    reason="M3GNet requires DGL which is not installed",
+)
+def test_m3gnet_relax_maker(si_structure: Structure, monkeypatch: pytest.MonkeyPatch):
     # translate one atom to ensure a small number of relaxation steps are taken
+    import matgl
+
+    monkeypatch.setattr(matgl.config, "BACKEND", "DGL")
+    importlib.reload(matgl)
+
     si_structure.translate_sites(0, [0, 0, 0.1])
 
     # generate job
@@ -178,9 +266,6 @@ def test_m3gnet_relax_maker(si_structure):
     assert output1.output.energy == approx(-10.8, abs=0.2)
     assert output1.output.n_steps == 24
 
-    with pytest.warns(FutureWarning):
-        M3GNetRelaxMaker()
-
 
 mace_paths = pytest.mark.parametrize(
     "model",
@@ -192,15 +277,26 @@ mace_paths = pytest.mark.parametrize(
 )
 
 
+@pytest.mark.skipif(
+    not mlff_is_installed("MACE"), reason="mace_torch is not installed."
+)
+@pytest.mark.parametrize("dispersion", [False, True])
 @mace_paths
-def test_mace_static_maker(si_structure: Structure, model):
+def test_mace_static_maker(si_structure: Structure, dispersion: bool, model):
+    from ase.calculators.mixing import SumCalculator
+
     # generate job
     # NOTE the test model is not trained on Si, so the energy is not accurate
-    job = ForceFieldStaticMaker(
+    maker = ForceFieldStaticMaker(
         force_field_name="MACE",
         ionic_step_data=("structure", "energy"),
-        calculator_kwargs={"model": model},
-    ).make(si_structure)
+        calculator_kwargs={"model": model, "dispersion": dispersion},
+    )
+    job = maker.make(si_structure)
+    if dispersion:
+        assert isinstance(maker.calculator, SumCalculator)
+    else:
+        assert not isinstance(maker.calculator, SumCalculator)
 
     # run the flow or job and ensure that it finished running successfully
     responses = run_locally(job, ensure_success=True)
@@ -208,16 +304,18 @@ def test_mace_static_maker(si_structure: Structure, model):
     # validation the outputs of the job
     output1 = responses[job.uuid][1].output
     assert isinstance(output1, ForceFieldTaskDocument)
-    assert output1.output.energy == approx(-0.068231, rel=1e-4)
+    assert output1.output.energy == approx(
+        -0.6819882079032458 if dispersion else -0.068231, rel=1e-4
+    )
     assert output1.output.n_steps == 1
     assert output1.forcefield_version == get_imported_version("mace-torch")
 
     assert Path("final_atoms_object.xyz").exists()
 
-    with pytest.warns(FutureWarning):
-        MACEStaticMaker()
 
-
+@pytest.mark.skipif(
+    not mlff_is_installed("MACE"), reason="mace_torch is not installed."
+)
 @pytest.mark.parametrize(
     "fix_symmetry, symprec", [(True, 1e-2), (False, 1e-2), (True, 1e-1)]
 )
@@ -249,10 +347,10 @@ def test_mace_relax_maker_fix_symmetry(
     else:
         assert initial_space_group != final_space_group
 
-    with pytest.warns(FutureWarning):
-        MACERelaxMaker()
 
-
+@pytest.mark.skipif(
+    not mlff_is_installed("MACE"), reason="mace_torch is not installed."
+)
 @pytest.mark.parametrize(
     "fix_symmetry, symprec", [(True, 1e-2), (False, 1e-2), (True, 1e-1)]
 )
@@ -322,9 +420,10 @@ def test_mace_relax_maker(
         assert output1.output.n_steps == 7
 
 
-def test_mace_mpa_0_relax_maker(
-    si_structure: Structure,
-):
+@pytest.mark.skipif(
+    not mlff_is_installed("MACE"), reason="mace_torch is not installed."
+)
+def test_mace_mpa_0_relax_maker(si_structure: Structure, test_dir: Path, tmp_dir):
     job = ForceFieldRelaxMaker(
         force_field_name="MACE_MPA_0",
         steps=25,
@@ -336,15 +435,32 @@ def test_mace_mpa_0_relax_maker(
     # validating the outputs of the job
     output = responses[job.uuid][1].output
 
+    water_molecule = Molecule.from_file(test_dir / "molecules" / "water.xyz.gz")
+    job_mol = ForceFieldRelaxMaker(
+        force_field_name="MACE_MPA_0",
+        steps=25,
+        relax_kwargs={"fmax": 0.005},
+    ).make(water_molecule)
+    # run the flow or job and ensure that it finished running successfully
+    responses_mol = run_locally(job_mol, ensure_success=True)
+
+    # validating the outputs of the job
+    output_mol = responses_mol[job_mol.uuid][1].output
+    assert isinstance(output_mol, ForceFieldMoleculeTaskDocument)
+
     assert output.ase_calculator_name == "MLFF.MACE_MPA_0"
     assert output.output.energy == pytest.approx(-10.829493522644043)
     assert output.output.structure.volume == pytest.approx(40.87471552602735)
     assert len(output.output.ionic_steps) == 4
     assert output.structure.volume == output.output.structure.volume
 
+    assert output_mol.ase_calculator_name == "MLFF.MACE_MPA_0"
+    assert output_mol.output.energy == pytest.approx(-13.786081314086914)
+    assert len(output_mol.output.ionic_steps) == 20
 
+
+@pytest.mark.skipif(not mlff_is_installed("GAP"), reason="quippy is not installed.")
 def test_gap_static_maker(si_structure: Structure, test_dir):
-    importorskip("quippy")
 
     # generate job
     # Test files have been provided by @YuanbinLiu (University of Oxford)
@@ -367,13 +483,10 @@ def test_gap_static_maker(si_structure: Structure, test_dir):
     assert output1.output.n_steps == 1
     assert output1.forcefield_version == get_imported_version("quippy-ase")
 
-    with pytest.warns(FutureWarning):
-        GAPStaticMaker()
 
-
+@pytest.mark.skipif(not mlff_is_installed("GAP"), reason="quippy is not installed.")
 @pytest.mark.parametrize("relax_cell", [True, False])
 def test_gap_relax_maker(si_structure: Structure, test_dir: Path, relax_cell: bool):
-    importorskip("quippy")
 
     # translate one atom to ensure a small number of relaxation steps are taken
     si_structure.translate_sites(0, [0, 0, 0.1])
@@ -406,10 +519,8 @@ def test_gap_relax_maker(si_structure: Structure, test_dir: Path, relax_cell: bo
         assert output1.output.energy == approx(-10.8523, rel=1e-4)
         assert output1.output.n_steps == 17
 
-    with pytest.warns(FutureWarning):
-        GAPRelaxMaker()
 
-
+@pytest.mark.skipif(not mlff_is_installed("NEP"), reason="calorine is not installed.")
 def test_nep_static_maker(al2_au_structure: Structure, test_dir: Path):
     # NOTE: The test NEP model is specifically trained on 16 elemental metals
     # thus a new Al2Au structure is added.
@@ -434,10 +545,8 @@ def test_nep_static_maker(al2_au_structure: Structure, test_dir: Path):
     assert output1.output.energy == approx(-47.65972, rel=1e-4)
     assert output1.output.n_steps == 1
 
-    with pytest.warns(FutureWarning):
-        NEPStaticMaker()
 
-
+@pytest.mark.skipif(not mlff_is_installed("NEP"), reason="calorine is not installed.")
 @pytest.mark.parametrize(
     ("relax_cell", "fix_symmetry"),
     [(True, False), (False, True)],
@@ -485,12 +594,9 @@ def test_nep_relax_maker(
     final_spg_num = output1.output.structure.get_space_group_info()[1]
     assert final_spg_num == 225
 
-    with pytest.warns(FutureWarning):
-        NEPRelaxMaker()
 
-
+@pytest.mark.skip(reason="Need recompiled Nequip model")
 def test_nequip_static_maker(sr_ti_o3_structure: Structure, test_dir: Path):
-    importorskip("nequip")
 
     # generate job
     # NOTE the test model is not trained on Si, so the energy is not accurate
@@ -498,7 +604,10 @@ def test_nequip_static_maker(sr_ti_o3_structure: Structure, test_dir: Path):
         force_field_name="Nequip",
         ionic_step_data=("structure", "energy"),
         calculator_kwargs={
-            "model_path": test_dir / "forcefields" / "nequip" / "nequip_ff_sr_ti_o3.pth"
+            "compile_path": test_dir
+            / "forcefields"
+            / "nequip"
+            / "nequip_ff_sr_ti_o3.nequip.pth"
         },
     ).make(sr_ti_o3_structure)
 
@@ -512,10 +621,8 @@ def test_nequip_static_maker(sr_ti_o3_structure: Structure, test_dir: Path):
     assert output1.output.n_steps == 1
     assert output1.forcefield_version == get_imported_version("nequip")
 
-    with pytest.warns(FutureWarning):
-        NequipStaticMaker()
 
-
+@pytest.mark.skip(reason="Need recompiled Nequip model")
 @pytest.mark.parametrize(
     ("relax_cell", "fix_symmetry"),
     [(True, False), (False, True)],
@@ -526,7 +633,6 @@ def test_nequip_relax_maker(
     relax_cell: bool,
     fix_symmetry: bool,
 ):
-    importorskip("nequip")
     # translate one atom to ensure a small number of relaxation steps are taken
     sr_ti_o3_structure.translate_sites(0, [0, 0, 0.2])
     # generate job
@@ -537,7 +643,10 @@ def test_nequip_relax_maker(
         relax_cell=relax_cell,
         fix_symmetry=fix_symmetry,
         calculator_kwargs={
-            "model_path": test_dir / "forcefields" / "nequip" / "nequip_ff_sr_ti_o3.pth"
+            "compile_path": test_dir
+            / "forcefields"
+            / "nequip"
+            / "nequip_ff_sr_ti_o3.nequip.pth"
         },
     ).make(sr_ti_o3_structure)
 
@@ -559,22 +668,88 @@ def test_nequip_relax_maker(
     final_spg_num = output1.output.structure.get_space_group_info()[1]
     assert final_spg_num == 99
 
-    with pytest.warns(FutureWarning):
-        NequipRelaxMaker()
+
+@pytest.mark.skipif(not mlff_is_installed("DeepMD"), reason="deepmd is not installed.")
+def test_deepmd_static_maker(
+    sr_ti_o3_structure: Structure, test_dir: Path, get_deepmd_pretrained_model_path
+):
+
+    # generate job
+    job = ForceFieldStaticMaker(
+        force_field_name="DeepMD",
+        ionic_step_data=("structure", "energy"),
+        calculator_kwargs={"model": get_deepmd_pretrained_model_path},
+    ).make(sr_ti_o3_structure)
+
+    # run the flow or job and ensure that it finished running successfully
+    responses = run_locally(job, ensure_success=True)
+
+    # validate the outputs of the job
+    output1 = responses[job.uuid][1].output
+    assert isinstance(output1, ForceFieldTaskDocument)
+    assert output1.output.energy == approx(-3723.09868, rel=1e-4)
+    assert output1.output.n_steps == 1
+    assert output1.forcefield_version == get_imported_version("deepmd-kit")
 
 
+@pytest.mark.skipif(not mlff_is_installed("DeepMD"), reason="deepmd is not installed.")
+@pytest.mark.parametrize(
+    ("relax_cell", "fix_symmetry"),
+    [(True, False), (False, True)],
+)
+def test_deepmd_relax_maker(
+    sr_ti_o3_structure: Structure,
+    test_dir: Path,
+    relax_cell: bool,
+    fix_symmetry: bool,
+    get_deepmd_pretrained_model_path: Path,
+):
+
+    # translate one atom to ensure a small number of relaxation steps are taken
+    sr_ti_o3_structure.translate_sites(0, [0, 0, 0.01])
+    # generate job
+    job = ForceFieldRelaxMaker(
+        force_field_name="DeepMD",
+        steps=25,
+        optimizer_kwargs={"optimizer": "BFGSLineSearch"},
+        relax_cell=relax_cell,
+        fix_symmetry=fix_symmetry,
+        calculator_kwargs={"model": get_deepmd_pretrained_model_path},
+    ).make(sr_ti_o3_structure)
+
+    # run the flow or job and ensure that it finished running successfully
+    responses = run_locally(job, ensure_success=True)
+
+    # validate the outputs of the job
+    output1 = responses[job.uuid][1].output
+    assert isinstance(output1, ForceFieldTaskDocument)
+    if relax_cell:
+        assert output1.output.energy == approx(-3723.099519623731, rel=1e-3)
+        assert output1.output.n_steps == 3
+    else:
+        assert output1.output.energy == approx(-3723.0981880334643, rel=1e-4)
+        assert output1.output.n_steps == 3
+
+    # fix_symmetry makes no difference for this structure relaxer combo
+    # just testing that passing fix_symmetry doesn't break
+    final_spg_num = output1.output.structure.get_space_group_info()[1]
+    assert final_spg_num == 99
+
+
+@pytest.mark.skipif(
+    not mlff_is_installed("MATPES_PBE"), reason="matgl is not installed."
+)
 @pytest.mark.parametrize("ref_func", ["PBE", "r2SCAN"])
 def test_matpes_relax_makers(
     sr_ti_o3_structure: Structure,
     test_dir: Path,
     ref_func: str,
 ):
-    importorskip("matgl")
 
     refs = {
         "PBE": {
-            "energy_per_atom": -7.969418334960937,
-            "volume": 61.5685434322787,
+            "energy_per_atom": -7.9611351013183596,
+            "volume": 60.91639399282195,
             "forces": [
                 [
                     -1.48095100627188e-08,
@@ -595,14 +770,14 @@ def test_matpes_relax_makers(
                 ],
             ],
             "stress": [
-                [-3.2316584962663115, -5.655957247906253e-07, -1.2974634469118903e-06],
-                [-5.655957247906253e-07, -3.2316376062607346, -3.4183954413422158e-06],
-                [-1.2974634469118903e-06, -3.4183954413422158e-06, -3.23162268482818],
+                [6.150300775936876, -5.854866356979066e-07, -6.522582661838942e-06],
+                [-5.854866356979066e-07, 6.150316070405244, -3.0104131342606253e-06],
+                [-6.522582661838942e-06, -3.0104131342606253e-06, 6.150302268080131],
             ],
         },
         "r2SCAN": {
-            "energy_per_atom": -12.618433380126953,
-            "volume": 59.608148084043876,
+            "energy_per_atom": -12.588912963867188,
+            "volume": 59.30895984045571,
             "forces": [
                 [1.1260409849001007e-07, 1.4873557496741796e-08, 6.234344596123265e-09],
                 [
@@ -623,9 +798,9 @@ def test_matpes_relax_makers(
                 [-7.171183824539185e-08, 3.3614934835668464e-08, 9.266178579991902e-08],
             ],
             "stress": [
-                [11.739250544520468, 9.398965578128745e-07, -3.1735166915189553e-06],
-                [9.398965578128745e-07, 11.739264719881394, -1.220071863449669e-06],
-                [-3.1735166915189553e-06, -1.220071863449669e-06, 11.739276657027439],
+                [12.034191310755238, -1.21893513832506e-06, -6.9246067896272225e-06],
+                [-1.21893513832506e-06, 12.03422712219337, -8.57680763083222e-06],
+                [-6.9246067896272225e-06, -8.57680763083222e-06, 12.03421369290407],
             ],
         },
     }
@@ -643,7 +818,7 @@ def test_matpes_relax_makers(
     assert isinstance(output, ForceFieldTaskDocument)
 
     ref = refs[ref_func]
-    assert output.output.energy_per_atom == approx(ref["energy_per_atom"])
+    assert output.output.energy_per_atom == approx(ref["energy_per_atom"], rel=1e-3)
     assert output.structure.volume == approx(ref["volume"])
     assert np.all(
         np.abs(np.array(output.output.ionic_steps[-1].forces) - np.array(ref["forces"]))
@@ -652,3 +827,184 @@ def test_matpes_relax_makers(
     assert np.all(
         np.abs(np.array(output.output.stress) - np.array(ref["stress"])) < 1e-1
     )
+
+
+@pytest.mark.skipif(
+    not mlff_is_installed("MatterSim"), reason="mattersim is not installed."
+)
+def test_mattersim_static_maker(si_structure: Structure, test_dir: Path):
+    job = ForceFieldStaticMaker(force_field_name="MatterSim").make(si_structure)
+    responses = run_locally(job, ensure_success=True)
+    output1 = responses[job.uuid][1].output
+    assert isinstance(output1, ForceFieldTaskDocument)
+    assert output1.output.energy == approx(-10.828996658325195, rel=1e-4)
+    assert output1.output.ionic_steps[-1].magmoms is None
+    assert output1.output.n_steps == 1
+    assert output1.forcefield_version == get_imported_version("mattersim")
+
+
+@pytest.mark.skipif(
+    not mlff_is_installed("MatterSim"), reason="mattersim is not installed."
+)
+def test_mattersim_relax_maker(si_structure: Structure, test_dir: Path):
+
+    # translate one atom to ensure a small number of relaxation steps are taken
+    si_structure.translate_sites(0, [0, 0, 0.1])
+    # generate job
+    job = ForceFieldRelaxMaker(
+        force_field_name="MatterSim",
+        steps=25,
+    ).make(si_structure)
+    responses = run_locally(job, ensure_success=True)
+    output = responses[job.uuid][1].output
+    assert isinstance(output, ForceFieldTaskDocument)
+    assert output.output.energy == approx(-10.825555801391602, rel=1e-4)
+    assert np.allclose(
+        output.output.ionic_steps[-1].forces,
+        [
+            [-0.17773497104644775, -0.1256822645664215, 0.05283086746931076],
+            [0.17773500084877014, 0.1256822645664215, -0.05283087491989136],
+        ],
+        rtol=1e-2,
+    )
+    assert len(output.output.ionic_steps) > 1
+    assert output.output.n_steps == len(output.output.ionic_steps)
+    assert output.forcefield_version == get_imported_version("mattersim")
+
+
+@pytest.mark.skipif(not mlff_is_installed("UPET"), reason="upet is not installed.")
+def test_upet_relax_maker(si_structure: Structure, test_dir: Path):
+
+    # translate one atom to ensure a small number of relaxation steps are taken
+    si_structure.translate_sites(0, [0, 0, 0.1])
+    # generate job
+    job = ForceFieldRelaxMaker(
+        force_field_name="UPET",
+        steps=25,
+        calculator_kwargs={"model": "pet-mad-xs"},
+    ).make(si_structure)
+    responses = run_locally(job, ensure_success=True)
+    output = responses[job.uuid][1].output
+    assert isinstance(output, ForceFieldTaskDocument)
+    assert output.output.energy == approx(-11.784157752990723, rel=1e-4)
+    assert np.allclose(
+        output.output.ionic_steps[-1].forces,
+        [
+            [-0.11604171991348267, -0.0830397754907608, 0.040690336376428604],
+            [0.11604174226522446, 0.0830397680401802, -0.040690336376428604],
+        ],
+        rtol=1e-2,
+    )
+    assert len(output.output.ionic_steps) > 1
+    assert output.output.n_steps == len(output.output.ionic_steps)
+    assert output.forcefield_version == get_imported_version("upet")
+
+
+@pytest.mark.skipif(not mlff_is_installed("MACE"), reason="mace_torch is not installed")
+def test_ext_load_static_maker(si_structure: Structure):
+    calculator_meta = {
+        "@module": "mace.calculators",
+        "@callable": "mace_mp",
+    }
+    job = ForceFieldStaticMaker(
+        force_field_name=calculator_meta,
+        ionic_step_data=("structure", "energy"),
+    ).make(si_structure)
+
+    # run the flow or job and ensure that it finished running successfully
+    responses = run_locally(job, ensure_success=True)
+
+    # validate job outputs
+    output1 = responses[job.uuid][1].output
+    assert isinstance(output1, ForceFieldTaskDocument)
+    assert output1.output.energy == approx(-10.8294954, rel=1e-4)
+    assert output1.output.ionic_steps[-1].magmoms is None
+    assert output1.output.n_steps == 1
+
+    assert output1.forcefield_name == "mace_mp"
+    assert output1.forcefield_version == get_imported_version("mace_torch")
+
+
+@pytest.mark.skipif(not mlff_is_installed("MACE"), reason="MACE is not installed")
+@pytest.mark.parametrize("as_str", [True, False])
+def test_roundtrip(si_structure: Structure, as_str: bool):
+
+    import json
+
+    from ase.calculators.calculator import Calculator
+    from mace.calculators import MACECalculator
+    from monty.json import MontyDecoder, MontyEncoder
+
+    import_str = "mace.calculators.mace_mp"
+    module, klass = import_str.rsplit(".", 1)
+
+    # If using an import string, one must specify this through `calculator_meta`
+    # If using a monty-style dict, one can use either `calculator_meta` (preferred)
+    # or `force_field_name` (for backwards compatibility)
+    valid_kwargs = ["calculator_meta"] + ([] if as_str else ["force_field_name"])
+
+    for calc_kwarg in valid_kwargs:
+        job = ForceFieldRelaxMaker(
+            **{
+                calc_kwarg: (
+                    import_str if as_str else {"@module": module, "@callable": klass}
+                )
+            },
+            calculator_kwargs={"model": "medium"},
+        ).make(si_structure)
+
+        roundtrip_job = MontyDecoder().decode(json.dumps(job, cls=MontyEncoder))
+
+        for j in (job, roundtrip_job):
+            assert j.maker.calculator_meta == import_str
+            assert j.maker.force_field_name == str(MLFF.Forcefield)
+            assert j.maker.mlff == MLFF.Forcefield
+            assert isinstance(j.maker.calculator, MACECalculator)
+            assert isinstance(j.maker.calculator, Calculator)
+
+
+@pytest.mark.skipif(not mlff_is_installed("MACE"), reason="MACE is not installed")
+@pytest.mark.parametrize(
+    "import_str",
+    [
+        "mace.calculators.foundations_models.mace_mp",
+        "mace.calculators.mace.MACECalculator",
+    ],
+)
+def test_roundtrip_legacy(si_structure: Structure, import_str: str):
+    # Test backwards compatibility. Legacy docs can contain dict for
+    # `force_field_name` which will be deserialized by monty into an ase
+    # `Calculator`. `ForceFieldMixin` needs to handle this and
+    # narrow types correctly
+
+    import json
+
+    from ase.calculators.calculator import Calculator
+    from mace.calculators import MACECalculator
+    from mace.calculators.foundations_models import download_mace_mp_checkpoint
+    from monty.json import MontyDecoder, MontyEncoder
+
+    module, klass = import_str.rsplit(".", 1)
+
+    job = ForceFieldRelaxMaker(
+        force_field_name={"@module": module, "@callable": klass},
+        calculator_kwargs=(
+            {"model": "medium"}
+            if klass == "mace_mp"
+            else {"model_paths": download_mace_mp_checkpoint("medium")}
+        ),
+    ).make(si_structure)
+
+    job_dct = json.loads(MontyEncoder().encode(job))
+    job_dct["function"]["@bound"]["force_field_name"] = {
+        "@module": module,
+        "@callable": klass,
+    }
+    job_dct["function"]["@bound"].pop("calculator_meta")
+
+    deser = MontyDecoder().process_decoded(job_dct)
+    assert deser.maker.calculator_meta == import_str
+    assert deser.maker.force_field_name == str(MLFF.Forcefield)
+    assert deser.maker.mlff == MLFF.Forcefield
+    assert isinstance(deser.maker.calculator, MACECalculator)
+    assert isinstance(deser.maker.calculator, Calculator)

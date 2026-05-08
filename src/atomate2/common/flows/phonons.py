@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from atomate2.forcefields.jobs import ForceFieldRelaxMaker, ForceFieldStaticMaker
     from atomate2.vasp.jobs.base import BaseVaspMaker
 
-SUPPORTED_CODES = frozenset(("vasp", "aims", "forcefields", "ase"))
+SUPPORTED_CODES = frozenset(("vasp", "aims", "forcefields", "ase", "torchsim"))
 
 
 @dataclass
@@ -132,7 +132,7 @@ class BasePhononMaker(Maker, ABC):
     store_force_constants: bool
         if True, force constants will be stored
     socket: bool
-        If True, use the socket for the calculation
+        If True, use the socket/batch for the calculation
     """
 
     name: str = "phonon"
