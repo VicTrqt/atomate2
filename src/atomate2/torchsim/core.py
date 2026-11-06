@@ -15,6 +15,7 @@ from jobflow import Maker, Response, job
 from pymatgen.core import Structure
 from pymatgen.util.due import Doi, due
 from torch_sim.autobatching import BinningAutoBatcher, InFlightAutoBatcher
+from torch_sim.optimizers import Optimizer
 
 from atomate2.torchsim.schema import (
     CONVERGENCE_FN_REGISTRY,
@@ -35,7 +36,6 @@ if TYPE_CHECKING:
     from typing import Any
 
     from torch_sim.models.interface import ModelInterface
-    from torch_sim.optimizers import Optimizer
     from torch_sim.trajectory import TrajectoryReporter
 
 
@@ -163,13 +163,14 @@ def process_trajectory_reporter_dict(
         for i, props in prop_calculators_typed.items()
     }
 
+    # ``filenames`` is a read-only property and the trajectory files are opened
+    # in the constructor, so resolve the paths before passing them in.
+    trajectory_reporter_dict["filenames"] = [
+        Path(p).resolve() for p in trajectory_reporter_dict.get("filenames", [])
+    ]
     trajectory_reporter = ts.TrajectoryReporter(
         **trajectory_reporter_dict, prop_calculators=prop_calculators_functions
     )
-
-    trajectory_reporter.filenames = [
-        Path(p).resolve() for p in trajectory_reporter_dict.get("filenames", [])
-    ]
 
     reporter_details = TrajectoryReporterDetails(
         state_frequency=trajectory_reporter.state_frequency,
@@ -306,7 +307,16 @@ def pick_model(
     model_path : str | Path
         Path to the model file or checkpoint.
     **model_kwargs : Any
-        Additional keyword arguments to pass to the model constructor.
+        Additional keyword arguments to pass to the model constructor. If
+        ``dispersion=True`` is passed, a D3 dispersion correction
+        (:obj:`~torch_sim.models.dispersion.D3DispersionModel`) is built from
+        the ``a1``, ``a2``, ``s8``, ``s6`` and ``d3_params`` keys and summed
+        with the base model. The BJ damping parameters (``a1``, ``a2``, ``s8``)
+        are functional-dependent; see the parameter table at
+        https://github.com/dftd3/simple-dftd3/blob/main/assets/parameters.toml.
+        ``d3_params`` must be a
+        :obj:`~torch_sim.models.dispersion.D3Parameters` instance carrying the
+        element reference data (``rcov``, ``r4r2``, ``c6ab``, ``cn_ref``).
 
     Returns
     -------
@@ -318,59 +328,111 @@ def pick_model(
     ValueError
         If an invalid model type is provided.
     """
+    d3_model = None
+    if model_kwargs.pop("dispersion", False):
+        from torch_sim.models.dispersion import D3DispersionModel
+
+        d3_keys = {"a1", "a2", "s8", "s6", "d3_params"}
+        d3_kwargs = {
+            key: model_kwargs.pop(key) for key in d3_keys if key in model_kwargs
+        }
+
+        missing = {"a1", "a2", "s8", "d3_params"} - d3_kwargs.keys()
+        if missing:
+            raise KeyError(
+                f"Missing required D3 dispersion parameter(s): {sorted(missing)}. "
+                "Depending on your DFT functional, other parameters may be required. "
+            )
+
+        # Only forward keys D3DispersionModel actually accepts; everything else
+        # left in model_kwargs is meant for the base model. cutoff is intentionally
+        # excluded so the D3 model keeps its own default.
+        d3_model_keys = {
+            "device",
+            "dtype",
+            "compute_forces",
+            "compute_stress",
+            "neighbor_list_fn",
+        }
+        forwarded_kwargs = {k: v for k, v in model_kwargs.items() if k in d3_model_keys}
+
+        d3_model = D3DispersionModel(
+            a1=d3_kwargs["a1"],
+            a2=d3_kwargs["a2"],
+            s8=d3_kwargs["s8"],
+            s6=d3_kwargs.get("s6", 1.0),
+            d3_params=d3_kwargs.get("d3_params"),
+            **forwarded_kwargs,
+        )
+
     match model_type:
-        case TorchSimModelType.FAIRCHEMV1:
-            from torch_sim.models.fairchem_legacy import FairChemV1Model
-
-            return FairChemV1Model(model=model_path, **model_kwargs)
-
         case TorchSimModelType.FAIRCHEM:
             from torch_sim.models.fairchem import FairChemModel
 
-            return FairChemModel(model=model_path, **model_kwargs)
-
-        case TorchSimModelType.GRAPHPESWRAPPER:
-            from torch_sim.models.graphpes import GraphPESWrapper
-
-            return GraphPESWrapper(model=model_path, **model_kwargs)
+            base_model = FairChemModel(model=model_path, **model_kwargs)
 
         case TorchSimModelType.MACE:
             from torch_sim.models.mace import MaceModel
 
-            return MaceModel(model=model_path, **model_kwargs)
+            base_model = MaceModel(model=model_path, **model_kwargs)
 
         case TorchSimModelType.MATTERSIM:
+            from mattersim.forcefield.potential import Potential
             from torch_sim.models.mattersim import MatterSimModel
 
-            return MatterSimModel(model=model_path, **model_kwargs)
+            model_instance = Potential.from_checkpoint(
+                load_path=model_path,
+                load_training_state=False,
+            )
+            base_model = MatterSimModel(model=model_instance, **model_kwargs)
 
         case TorchSimModelType.METATOMIC:
             from torch_sim.models.metatomic import MetatomicModel
 
-            return MetatomicModel(model=model_path, **model_kwargs)
+            base_model = MetatomicModel(model=model_path, **model_kwargs)
 
         case TorchSimModelType.NEQUIPFRAMEWORK:
             from torch_sim.models.nequip_framework import NequIPFrameworkModel
 
-            return NequIPFrameworkModel(model=model_path, **model_kwargs)
+            base_model = NequIPFrameworkModel.from_compiled_model(
+                compile_path=model_path, **model_kwargs
+            )
 
         case TorchSimModelType.ORB:
+            from orb_models.forcefield.pretrained import ORB_PRETRAINED_MODELS
             from torch_sim.models.orb import OrbModel
 
-            return OrbModel(model=model_path, **model_kwargs)
+            model_fn = ORB_PRETRAINED_MODELS.get(str(model_path))
+            if model_fn is None:
+                raise ValueError(
+                    f"Invalid ORB model name: {model_path}. "
+                    f"Available ORB models: {list(ORB_PRETRAINED_MODELS.keys())}"
+                )
+
+            model_instance, atoms_adapter = model_fn()
+            base_model = OrbModel(
+                model=model_instance, atoms_adapter=atoms_adapter, **model_kwargs
+            )
 
         case TorchSimModelType.SEVENNET:
             from torch_sim.models.sevennet import SevenNetModel
 
-            return SevenNetModel(model=model_path, **model_kwargs)
+            base_model = SevenNetModel(model=model_path, **model_kwargs)
 
         case TorchSimModelType.LENNARD_JONES:
             from torch_sim.models.lennard_jones import LennardJonesModel
 
-            return LennardJonesModel(**model_kwargs)
+            base_model = LennardJonesModel(**model_kwargs)
 
         case _:
             raise ValueError(f"Invalid model type: {model_type}")
+
+    if d3_model is not None:
+        from torch_sim.models.interface import SumModel
+
+        return SumModel(base_model, d3_model)
+
+    return base_model
 
 
 @dataclass
@@ -441,6 +503,11 @@ class TorchSimOptimizeMaker(Maker):
         Keyword arguments passed to the optimizer step function.
     tags : list[str] | None
         Tags for the job.
+    fix_symmetry : bool
+        Whether to fix the symmetry during relaxation.
+        Refines the symmetry of the initial structure.
+    symprec : float | None
+        Tolerance for symmetry finding in case of fix_symmetry.
     """
 
     optimizer: Optimizer
@@ -457,6 +524,8 @@ class TorchSimOptimizeMaker(Maker):
     init_kwargs: dict | None = None
     optimizer_kwargs: dict | None = None
     tags: list[str] | None = None
+    fix_symmetry: bool = False
+    symprec: float = 1e-2
 
     @torchsim_job
     def make(
@@ -506,9 +575,26 @@ class TorchSimOptimizeMaker(Maker):
 
         optimizer_kwargs = self.optimizer_kwargs or {}
 
+        # When a TorchSimOptimizer is passed to a job, the optimizer is converted
+        # to a string to be serialized but we need the actual Enum member
+        if isinstance(self.optimizer, str):
+            try:
+                self.optimizer = Optimizer[self.optimizer.lower()]
+            except (KeyError, ValueError) as e:
+                raise ValueError(
+                    f"Could not convert string '{self.optimizer}' to an Optimizer."
+                ) from e
+
+        init_state = ts.io.structures_to_state(structures)
+        if self.fix_symmetry:
+            constraint = ts.constraints.FixSymmetry.from_state(
+                init_state, symprec=self.symprec
+            )
+            init_state.constraints = constraint
+
         start_time = time.time()
         state = ts.optimize(
-            system=structures,
+            system=init_state,
             model=model,
             optimizer=self.optimizer,
             convergence_fn=convergence_fn_obj,
@@ -522,6 +608,12 @@ class TorchSimOptimizeMaker(Maker):
         elapsed_time = time.time() - start_time
 
         final_structures = state.to_structures()
+
+        # TorchSim SimState drops (site) properties, so we need to re-attach them
+        for initial, final in zip(structures, final_structures, strict=True):
+            final.properties = initial.properties
+            for key, value in initial.site_properties.items():
+                final.add_site_property(key, value)
 
         # Get final calculation output
         calculation_output = get_calculation_output(state, model, autobatcher)
@@ -688,6 +780,12 @@ class TorchSimIntegrateMaker(Maker):
         calculation_output = get_calculation_output(state, model, autobatcher)
 
         final_structures = state.to_structures()
+
+        # TorchSim SimState drops (site) properties, so we need to re-attach them
+        for initial, final in zip(structures, final_structures, strict=True):
+            final.properties = initial.properties
+            for key, value in initial.site_properties.items():
+                final.add_site_property(key, value)
 
         # Create calculation object
         calculation = TorchSimCalculation(

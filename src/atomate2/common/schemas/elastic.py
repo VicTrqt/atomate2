@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 from enum import Enum
+from typing import Self
 
 import numpy as np
 from emmet.core.math import Matrix3D, MatrixVoigt
@@ -17,7 +18,6 @@ from pymatgen.analysis.elasticity import (
 from pymatgen.core import Structure
 from pymatgen.core.tensors import TensorMapping
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
-from typing_extensions import Self
 
 from atomate2 import SETTINGS
 from atomate2.common.utils import _recursive_to_list
@@ -167,7 +167,7 @@ class ElasticDocument(StructureMetadata):
         equilibrium_stress: Matrix3D | None = None,
         symprec: float = SETTINGS.SYMPREC,
         allow_elastically_unstable_structs: bool = True,
-        failed_uuids: list[str] = None,
+        failed_uuids: list[str] | None = None,
     ) -> Self:
         """Create an elastic document from strains and stresses.
 
@@ -199,7 +199,7 @@ class ElasticDocument(StructureMetadata):
         allow_elastically_unstable_structs : bool
             Whether to allow the ElasticDocument to still complete in the event that
             the structure is elastically unstable.
-        failed_uuids: list of str
+        failed_uuids: list of str or None
             The uuids of perturbations that were not completed
         """
         strains = [d.green_lagrange_strain for d in deformations]
@@ -216,7 +216,7 @@ class ElasticDocument(StructureMetadata):
         stresses = [-0.1 * s for s in stresses]
         eq_stress = None
         if equilibrium_stress:
-            eq_stress = -0.1 * Stress(equilibrium_stress)
+            eq_stress = -0.1 * Stress(np.squeeze(equilibrium_stress))
 
         pk_stresses = [
             s.piola_kirchoff_2(d) for s, d in zip(stresses, deformations, strict=True)
@@ -302,15 +302,29 @@ def expand_strains(
         strains will not contain the ones with other strain states. Also see:
         `generate_elastic_deformations()`.
     """
+    if tol <= 0:
+        raise ValueError(f"tol must be positive, got {tol}")
+    for strain in strains:
+        applied_components = np.abs(strain.voigt)
+        if len(applied_components[applied_components > tol]) == 0:
+            raise ValueError("tol must be smaller than the applied strain magnitude")
+
+    def zero_numerical_components(strain: Strain) -> Strain:
+        voigt = np.asarray(strain.voigt).copy()
+        voigt[np.abs(voigt) <= tol] = 0
+        return Strain.from_voigt(voigt)
+
     sga = SpacegroupAnalyzer(structure, symprec=symprec)
     symm_ops = sga.get_symmetry_operations(cartesian=True)
 
-    full_strains = deepcopy(strains)
+    full_strains = [zero_numerical_components(strain) for strain in strains]
     full_stresses = deepcopy(stresses)
     full_uuids = deepcopy(uuids)
     full_job_dirs = deepcopy(job_dirs)
 
-    mapping = TensorMapping(full_strains, [True for _ in full_strains])
+    # Preserve the original strains for identity comparisons so normalization does
+    # not change which symmetry-equivalent strains are accepted.
+    mapping = TensorMapping(deepcopy(strains), [True for _ in strains])
     for idx, strain in enumerate(strains):
         for symm_op in symm_ops:
             rotated_strain = strain.transform(symm_op)
@@ -327,7 +341,7 @@ def expand_strains(
             mapping[rotated_strain] = True
 
             # expand the other properties
-            full_strains.append(rotated_strain)
+            full_strains.append(zero_numerical_components(rotated_strain))
             full_stresses.append(stresses[idx].transform(symm_op))
             full_uuids.append(uuids[idx])
             full_job_dirs.append(job_dirs[idx])

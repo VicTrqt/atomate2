@@ -9,28 +9,38 @@ import pytest
 
 ts = pytest.importorskip("torch_sim")
 
+import torch
 from ase.build import bulk
 from jobflow import run_locally
-from mace.calculators.foundations_models import download_mace_mp_checkpoint
 from pymatgen.core import Structure
 from pymatgen.io.ase import AseAtomsAdaptor
+from torch_sim.models.dispersion import D3Parameters
 
-from atomate2.common.jobs.phonons import (
-    generate_phonon_displacements,
-    get_supercell_size,
-)
 from atomate2.torchsim.core import (
     TorchSimIntegrateMaker,
     TorchSimOptimizeMaker,
     TorchSimStaticMaker,
+    pick_model,
 )
 from atomate2.torchsim.schema import ConvergenceFn, TorchSimModelType
 
+from .conftest import (
+    _SKIP_FAIRCHEM,
+    _SKIP_MACE,
+    _SKIP_MATTERSIM,
+    _SKIP_METATOMIC,
+    _SKIP_NEQUIP,
+    _SKIP_NVALCHEMIOPS,
+    _SKIP_ORB,
+    _SKIP_SEVENNET,
+)
 
-@pytest.fixture
-def mace_model_path():
-    """Download and return path to MACE model checkpoint."""
-    return Path(download_mace_mp_checkpoint("small"))
+try:
+    from huggingface_hub.utils._auth import get_token
+
+    HAS_HF = True
+except ImportError:
+    HAS_HF = False
 
 
 @pytest.fixture
@@ -56,6 +66,10 @@ def test_relax_job_comprehensive(ar_structure: Structure, tmp_path) -> None:
     perturbed_structure = ar_structure.copy()
     perturbed_structure.translate_sites(
         list(range(len(perturbed_structure))), [0.01, 0.01, 0.01]
+    )
+    perturbed_structure.properties["my_prop"] = 1.5
+    perturbed_structure.add_site_property(
+        "my_site_prop", list(range(len(perturbed_structure)))
     )
 
     n_systems = 2
@@ -94,6 +108,13 @@ def test_relax_job_comprehensive(ar_structure: Structure, tmp_path) -> None:
     assert isinstance(result.structures, list)
     assert len(result.structures) == n_systems
     assert isinstance(result.structures[0], Structure)
+
+    # Check that structure properties and site properties survive the round trip
+    for final_structure in result.structures:
+        assert final_structure.properties == perturbed_structure.properties
+        assert final_structure.site_properties["my_site_prop"] == list(
+            range(len(perturbed_structure))
+        )
 
     # Check calculation details
     assert len(result.calcs_reversed) == 1
@@ -134,15 +155,16 @@ def test_relax_job_comprehensive(ar_structure: Structure, tmp_path) -> None:
     assert result.time_elapsed > 0
 
 
-def test_relax_job_mace(
-    ar_structure: Structure, mace_model_path: str, tmp_path
-) -> None:
+@pytest.mark.skipif(_SKIP_MACE, reason="mace-torch is not installed.")
+def test_relax_job_mace(si_structure: Structure, tmp_path, test_dir) -> None:
     """Test TSOptimizeMaker with MACE model.
 
     Includes trajectory reporter and autobatcher.
     """
+    mace_model_path = f"{test_dir}/forcefields/mace/MACE.model"
+
     # Perturb the structure to make optimization meaningful
-    perturbed_structure = ar_structure.copy()
+    perturbed_structure = si_structure.copy()
     perturbed_structure.translate_sites(
         list(range(len(perturbed_structure))), [0.01, 0.01, 0.01]
     )
@@ -188,6 +210,10 @@ def test_md_job_comprehensive(ar_structure: Structure, tmp_path) -> None:
 
     Includes trajectory reporter and autobatcher.
     """
+    structure = ar_structure.copy()
+    structure.properties["my_prop"] = 1.5
+    structure.add_site_property("my_site_prop", list(range(len(structure))))
+
     n_systems = 2
     trajectory_reporter_dict = {
         "filenames": [tmp_path / f"md_{i}.h5md" for i in range(n_systems)],
@@ -210,7 +236,7 @@ def test_md_job_comprehensive(ar_structure: Structure, tmp_path) -> None:
         model_kwargs={"sigma": 3.405, "epsilon": 0.0104, "compute_stress": True},
     )
 
-    job = maker.make([ar_structure] * n_systems)
+    job = maker.make([structure] * n_systems)
     response_dict = run_locally(job, ensure_success=True, root_dir=tmp_path)
     result = list(response_dict.values())[-1][1].output
 
@@ -223,6 +249,13 @@ def test_md_job_comprehensive(ar_structure: Structure, tmp_path) -> None:
     assert isinstance(result.structures, list)
     assert len(result.structures) == n_systems
     assert isinstance(result.structures[0], Structure)
+
+    # Check that structure properties and site properties survive the round trip
+    for final_structure in result.structures:
+        assert final_structure.properties == structure.properties
+        assert final_structure.site_properties["my_site_prop"] == list(
+            range(len(structure))
+        )
 
     # Check calculation details
     assert len(result.calcs_reversed) == 1
@@ -336,198 +369,114 @@ def test_static_job_comprehensive(ar_structure: Structure, tmp_path) -> None:
     assert result.time_elapsed > 0
 
 
-@pytest.fixture
-def si_structure():
-    """Create a silicon structure for testing."""
-    atoms = bulk("Si", "diamond", a=5.43, cubic=True)
-    return AseAtomsAdaptor.get_structure(atoms)
+@pytest.mark.skipif(
+    not HAS_HF or get_token() is None,
+    reason="Hugging Face is not installed or token is not available.",
+)
+@pytest.mark.skipif(_SKIP_FAIRCHEM, reason="fairchem-core is not installed.")
+def test_pick_model_fairchem() -> None:
+    pick_model(TorchSimModelType.FAIRCHEM, model_path="uma-s-1p1")
 
 
-def test_torchsim_phonon_displacements(si_structure: Structure, tmp_path) -> None:
-    """Test TorchSimStaticMaker can compute forces on phonon displaced structures.
+@pytest.mark.skipif(_SKIP_MACE, reason="mace-torch is not installed.")
+def test_pick_model_mace(test_dir) -> None:
+    path = f"{test_dir}/forcefields/mace/MACE.model"
+    pick_model(TorchSimModelType.MACE, model_path=path)
 
-    This test validates that TorchSim's static maker produces output compatible
-    with the phonon workflow interface. It tests:
-    1. Phonon displacement generation using standard atomate2 machinery
-    2. Batch force calculation using TorchSim
-    3. Output schema compatibility (task_doc.output.all_forces and .forces)
+
+@pytest.mark.skipif(_SKIP_MATTERSIM, reason="mattersim is not installed.")
+def test_pick_model_mattersim() -> None:
+    pick_model(TorchSimModelType.MATTERSIM, model_path="mattersim-v1.0.0-1m.pth")
+
+
+@pytest.mark.skipif(
+    _SKIP_METATOMIC, reason="metatomic_torchsim or upet is not installed."
+)
+def test_pick_model_metatomic() -> None:
+    from upet import get_upet
+
+    # get_upet returns an instance of AtomisticModel and not a path
+    # which will break the type checker but is actually supported by
+    # MetatomicModel so its good enough for testing
+    # TODO: unpin version if newer version of UPET is used
+    model = get_upet(model="pet-mad", size="s", version="1.5.0")
+    pick_model(TorchSimModelType.METATOMIC, model_path=model)
+
+
+@pytest.mark.skipif(_SKIP_NEQUIP, reason="nequip is not installed.")
+def test_pick_model_nequip(test_dir) -> None:
+    path = f"{test_dir}/forcefields/nequip/nequip_ff_sr_ti_o3.nequip.pth"
+    pick_model(TorchSimModelType.NEQUIPFRAMEWORK, model_path=path)
+
+
+@pytest.mark.skipif(_SKIP_ORB, reason="orb_models is not installed.")
+def test_pick_model_orb() -> None:
+    pick_model(TorchSimModelType.ORB, model_path="orb-v2")
+
+
+@pytest.mark.skipif(_SKIP_SEVENNET, reason="sevenn is not installed.")
+def test_pick_model_sevennet() -> None:
+    pick_model(TorchSimModelType.SEVENNET, model_path="7net-0")
+
+
+def _dummy_d3_params(max_z: int = 18):
+    """Build a D3Parameters instance with arbitrary (non-physical) values."""
+    return D3Parameters(
+        rcov=torch.rand(max_z + 1, dtype=torch.float64),
+        r4r2=torch.rand(max_z + 1, dtype=torch.float64),
+        c6ab=torch.rand(max_z + 1, max_z + 1, 5, 5, dtype=torch.float64),
+        cn_ref=torch.rand(max_z + 1, max_z + 1, 5, 5, dtype=torch.float64),
+    )
+
+
+@pytest.mark.skipif(_SKIP_NVALCHEMIOPS, reason="nvalchemiops is not installed.")
+def test_pick_model_dispersion() -> None:
+    """A D3 dispersion correction should be summed with the base model.
+
+    The base model's cutoff must be preserved, while the D3 model should fall
+    back to its own default cutoff rather than inheriting the base model's.
     """
-    # Step 1: Get supercell size (using small supercell for fast testing)
-    supercell_job = get_supercell_size(
-        si_structure, min_length=8, max_length=12, prefer_90_degrees=True
-    )
-    responses = run_locally(supercell_job, create_folders=True, ensure_success=True)
-    supercell_matrix = responses[supercell_job.uuid][1].output
+    from torch_sim.models.dispersion import D3DispersionModel
+    from torch_sim.models.interface import SumModel
+    from torch_sim.models.lennard_jones import LennardJonesModel
 
-    # Step 2: Generate phonon displacements
-    displacement_job = generate_phonon_displacements(
-        structure=si_structure,
-        supercell_matrix=supercell_matrix,
-        displacement=0.01,
-        sym_reduce=True,
-        symprec=1e-4,
-        use_symmetrized_structure=None,
-        kpath_scheme="seekpath",
-        code="torchsim",
-    )
-    responses = run_locally(displacement_job, create_folders=True, ensure_success=True)
-    displaced_structures = responses[displacement_job.uuid][1].output
-
-    # Verify we have displacements to test
-    assert len(displaced_structures) > 0, "No displaced structures generated"
-
-    # Step 3: Compute forces using TorchSim (batched calculation)
-    # Using Lennard-Jones for testing (works without external model files)
-    maker = TorchSimStaticMaker(
-        model_type=TorchSimModelType.LENNARD_JONES,
+    model = pick_model(
+        TorchSimModelType.LENNARD_JONES,
         model_path="",
-        model_kwargs={"sigma": 2.0, "epsilon": 0.01, "compute_stress": True},
+        sigma=3.405,
+        epsilon=0.0104,
+        cutoff=6.0,
+        dispersion=True,
+        a1=0.4289,
+        a2=4.4407,
+        s8=0.7875,
+        d3_params=_dummy_d3_params(),
     )
 
-    # Run static calculation on all displaced structures at once
-    # This demonstrates TorchSim's native batch processing capability
-    job = maker.make(displaced_structures)
-    response_dict = run_locally(job, ensure_success=True, root_dir=tmp_path)
-    task_doc = list(response_dict.values())[-1][1].output
+    assert isinstance(model, SumModel)
+    base_model, d3_model = model.models
+    assert isinstance(base_model, LennardJonesModel)
+    assert isinstance(d3_model, D3DispersionModel)
+    assert isinstance(d3_model.d3_params, D3Parameters)
 
-    # Step 4: Validate phonon-compatible output interface
-    # The phonon workflow accesses task_doc.output.all_forces (batch mode)
-    # and task_doc.output.forces (single structure mode)
-    assert hasattr(task_doc, "output"), "TorchSimTaskDoc must have output property"
+    assert base_model.cutoff == pytest.approx(6.0)
+    assert d3_model.cutoff != pytest.approx(6.0)
 
-    output = task_doc.output
-    assert output.all_forces is not None, "all_forces should be populated"
-    assert len(output.all_forces) == len(displaced_structures)
+    assert d3_model.a1 == 0.4289
+    assert d3_model.a2 == 4.4407
+    assert d3_model.s8 == 0.7875
+    assert d3_model.s6 == 1.0
 
-    # Verify force dimensions match atom counts
-    for i, (forces, struct) in enumerate(
-        zip(output.all_forces, displaced_structures, strict=True)
-    ):
-        assert len(forces) == len(struct), (
-            f"Force count mismatch for structure {i}: "
-            f"got {len(forces)}, expected {len(struct)}"
+
+@pytest.mark.skipif(_SKIP_NVALCHEMIOPS, reason="nvalchemiops is not installed.")
+def test_pick_model_dispersion_missing_params() -> None:
+    """Missing required D3 parameters should raise a clear KeyError."""
+    with pytest.raises(KeyError, match="a2"):
+        pick_model(
+            TorchSimModelType.LENNARD_JONES,
+            model_path="",
+            dispersion=True,
+            a1=0.4289,
+            s8=0.7875,
+            d3_params=_dummy_d3_params(),
         )
-        # Each force should be a 3D vector
-        for atom_force in forces:
-            assert len(atom_force) == 3, f"Force should be 3D vector, got {atom_force}"
-
-    # Test single-structure access via .forces property
-    assert output.forces is not None, "forces property should return first structure"
-    assert len(output.forces) == len(displaced_structures[0])
-
-    # Verify energies are computed
-    assert output.energies is not None
-    assert len(output.energies) == len(displaced_structures)
-
-
-def test_torchsim_output_schema_compatibility(
-    ar_structure: Structure, tmp_path
-) -> None:
-    """Test that TorchSimTaskDoc output schema matches phonon workflow expectations.
-
-    The phonon workflow (run_phonon_displacements) accesses:
-    - task_doc.output.all_forces for socket/batch mode
-    - task_doc.output.forces for non-socket/single mode
-
-    This test verifies the schema structure is correct.
-    """
-    maker = TorchSimStaticMaker(
-        model_type=TorchSimModelType.LENNARD_JONES,
-        model_path="",
-        model_kwargs={"sigma": 3.405, "epsilon": 0.0104, "compute_stress": True},
-    )
-
-    # Test with multiple structures (batch mode)
-    job = maker.make([ar_structure, ar_structure])
-    response_dict = run_locally(job, ensure_success=True, root_dir=tmp_path)
-    task_doc = list(response_dict.values())[-1][1].output
-
-    # Verify the output access pattern matches phonon expectations
-    # Phonon code does: phonon_job.output.output.all_forces
-    # With jobflow output_schema, this becomes: task_doc.output.all_forces
-    assert task_doc.output.all_forces is not None
-    assert len(task_doc.output.all_forces) == 2
-
-    # Verify .forces returns first structure's forces
-    assert task_doc.output.forces is not None
-    assert task_doc.output.forces == task_doc.output.all_forces[0]
-
-    # Verify stress tensor format
-    assert task_doc.output.stress is not None
-    assert len(task_doc.output.stress) == 2
-    # Each stress should be a 3x3 matrix
-    for stress in task_doc.output.stress:
-        assert len(stress) == 3
-        for row in stress:
-            assert len(row) == 3
-
-
-def test_torchsim_phonon_maker_integration(si_structure: Structure, tmp_path) -> None:
-    """Test that TorchSim makers can be used within PhononMaker.
-
-    This test validates that TorchSimOptimizeMaker and TorchSimStaticMaker
-    can be used as bulk_relax_maker and static_energy_maker within PhononMaker,
-    ensuring proper schema compatibility for phonon workflow integration.
-    """
-    from dataclasses import dataclass
-
-    from jobflow import Flow
-
-    from atomate2.common.flows.phonons import BasePhononMaker
-
-    # Create TorchSim makers for phonon workflow
-    relax_maker = TorchSimOptimizeMaker(
-        model_type=TorchSimModelType.LENNARD_JONES,
-        model_path="",
-        optimizer=ts.Optimizer.fire,
-        model_kwargs={"sigma": 2.0, "epsilon": 0.01, "compute_stress": True},
-        max_steps=100,
-        init_kwargs={"cell_filter": ts.CellFilter.unit},
-    )
-
-    static_maker = TorchSimStaticMaker(
-        model_type=TorchSimModelType.LENNARD_JONES,
-        model_path="",
-        model_kwargs={"sigma": 2.0, "epsilon": 0.01, "compute_stress": True},
-    )
-
-    # Create a minimal PhononMaker subclass for testing
-    @dataclass
-    class TorchSimPhononMaker(BasePhononMaker):
-        """Test PhononMaker using TorchSim makers."""
-
-        name: str = "torchsim phonon"
-        bulk_relax_maker: TorchSimOptimizeMaker | None = None
-        static_energy_maker: TorchSimStaticMaker | None = None
-        phonon_displacement_maker: TorchSimStaticMaker | None = None
-        code: str = "torchsim"
-
-        @property
-        def prev_calc_dir_argname(self) -> None:
-            """TorchSim doesn't use prev_calc_dir."""
-            return None
-
-    phonon_maker = TorchSimPhononMaker(
-        bulk_relax_maker=relax_maker,
-        static_energy_maker=static_maker,
-        phonon_displacement_maker=static_maker,
-        use_symmetrized_structure="primitive",  # required for non-seekpath kpath
-        create_thermal_displacements=False,
-        store_force_constants=False,
-        kpath_scheme="setyawan_curtarolo",  # avoid seekpath dependency
-    )
-
-    # Create the phonon flow
-    flow = phonon_maker.make(si_structure)
-
-    # Verify flow is created successfully
-    assert isinstance(flow, Flow)
-    assert len(flow) >= 5  # At minimum: conv, relax, supercell, static, displacements
-
-    # Check that the TorchSim jobs are present in the flow
-    job_names = [j.name for j in flow]
-    assert "torchsim optimize" in job_names, f"Expected relax job, got {job_names}"
-    assert "torchsim static" in job_names, f"Expected static job, got {job_names}"
-
-    # Run the flow locally to verify end-to-end execution
-    run_locally(flow, create_folders=True, ensure_success=True, root_dir=tmp_path)
