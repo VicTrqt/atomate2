@@ -180,3 +180,10 @@ def pytest_addoption(parser):
         help="Run abinit integration tests. "
         "This basically runs the same tests but without the mocking.",
     )
+    parser.addoption(
+        "--abinit-record-perts",
+        action="store_true",
+        default=False,
+        help="Record abipy perturbation results to the perts.json.gz reference files "
+        "(mock mode only; requires a working abinit binary on PATH).",
+    )

@@ -360,6 +360,40 @@ def abinit_test_data(test_name: str, test_data_dir: str | None, force: bool) -> 
     original_mapping = {}
     mapping: dict[Any, Any] = {}
 
+    def _add_to_mapping(
+        job_name: str, index_job: str, job_index_dir: Path, orig_job_dir: Path | None
+    ) -> Path:
+        """Register a job reference directory in the ref_paths mapping."""
+        job_index_dir = job_index_dir.resolve()
+
+        job_index_dir_parts = job_index_dir.parts
+        indices = _find_sub_list(
+            (
+                "atomate2",
+                "tests",
+                "test_data",
+                "abinit",
+            ),
+            job_index_dir_parts,
+        )
+        if len(indices) != 1:
+            raise RuntimeError(
+                "Could not find job_test's "
+                "atomate2/tests/test_data/abinit-based root dir"
+            )
+        job_index_dir_for_mapping = Path(*job_index_dir_parts[indices[0][1] :])
+        if job_name not in mapping:
+            mapping[job_name] = {}
+        if index_job in mapping[job_name]:
+            raise RuntimeError(
+                f"Job index {index_job} for "
+                f"{job_name} Job is already present in the mapping"
+            )
+        mapping[job_name][index_job] = str(job_index_dir_for_mapping)
+        if orig_job_dir is not None:
+            original_mapping[str(job_index_dir)] = orig_job_dir
+        return job_index_dir
+
     def _fake_dirdata(
         src_dir: Path,
         dest_dir: Path,
@@ -454,6 +488,25 @@ def abinit_test_data(test_name: str, test_data_dir: str | None, force: bool) -> 
             )
 
     for output in outputs:
+        if isinstance(output.output, dict) and set(output.output) >= {"perts", "dirs"}:
+            # generate_perts job: runs no abinit/mrgddb/anaddb binary, so it has no
+            # inputs/outputs reference. Its reference is perts.json.gz (the recorded
+            # abipy perturbation results), created by running the generated test once
+            # with --abinit-record-perts after this test data is in place.
+            # NB: the mapping index for generate_perts is the index at which the flow
+            # output is stored by jobflow's store_inputs mechanism (execution index
+            # + 1), not the execution index at which the perturbation helpers run.
+            # The conftest pert mock resolves the reference directory
+            # index-agnostically, so this is fine.
+            job_name = "generate_perts"
+            index_job = str(output.index)
+            job_dir = test_dir / job_name
+            _makedir(job_dir, force_overwrite=force)
+            job_index_dir = job_dir / index_job
+            _makedir(job_index_dir, force_overwrite=force)
+            _add_to_mapping(job_name, index_job, job_index_dir, None)
+            continue
+
         if (
             not isinstance(output.output, AbinitTaskDoc)
             and not isinstance(output.output, MrgddbTaskDoc)
@@ -473,33 +526,9 @@ def abinit_test_data(test_name: str, test_data_dir: str | None, force: bool) -> 
         job_index_dir = job_dir / index_job
         _makedir(job_index_dir, force_overwrite=force)
 
-        job_index_dir = job_index_dir.resolve()
-
-        job_index_dir_parts = job_index_dir.parts
-        indices = _find_sub_list(
-            (
-                "atomate2",
-                "tests",
-                "test_data",
-                "abinit",
-            ),
-            job_index_dir_parts,
+        job_index_dir = _add_to_mapping(
+            job_name, index_job, job_index_dir, orig_job_dir
         )
-        if len(indices) != 1:
-            raise RuntimeError(
-                "Could not find job_test's "
-                "atomate2/tests/test_data/abinit-based root dir"
-            )
-        job_index_dir_for_mapping = Path(*job_index_dir_parts[indices[0][1] :])
-        if job_name not in mapping:
-            mapping[job_name] = {}
-        if index_job in mapping[job_name]:
-            raise RuntimeError(
-                f"Job index {index_job} for "
-                f"{job_name} Job is already present in the mapping"
-            )
-        mapping[job_name][index_job] = str(job_index_dir_for_mapping)
-        original_mapping[str(job_index_dir)] = orig_job_dir
 
         # create input folder and copy across files
         input_dir = job_index_dir / "inputs"
@@ -632,6 +661,13 @@ class Test{maker_name}:
         assert output1.structure == structure
         assert output1.run_number == 1
     """
+
+    if "generate_perts" in mapping:
+        test_function_str += """
+This flow includes a generate_perts job. After the test data is copied, run the new
+test once with --abinit-record-perts (requires real abinit on PATH) to create the
+generate_perts/<index>/perts.json.gz reference file.
+"""
 
     print(test_function_str)  # noqa: T201
 
