@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import gzip
-import json
 import logging
 import shutil
 from pathlib import Path
@@ -11,6 +10,15 @@ import numpy as np
 import pytest
 from abipy.abio.abivars import is_anaddb_var
 from pymatgen.util.coord import find_in_coord_list_pbc
+
+from atomate2.utils.testing.abinit import (
+    PERT_METHOD_NAMES,
+    PertRecorder,
+    dump_pert_result,
+    load_pert_result,
+    load_perts_gz,
+    pert_call_key,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -28,19 +36,11 @@ _FAKE_RUN_ABINIT_KWARGS = {}
 # resolved through the standard _REF_PATHS registry: the reference of the
 # generate_perts job is the perts.json.gz file inside its reference directory.
 # Results are stored under a canonical string of the distinguishing call
-# arguments (see _pert_call_key).
-# Perturbation reference files already (re-)written during the current fixture:
-# the first record-mode call resets the file, so re-recording a test does not
-# append duplicate entries to existing reference data.
-_PERT_RECORDED_FILES = set()
-# The abipy AbinitInput methods mocked by mock_abinit. These helpers would
-# otherwise run the real abinit binary from within the generate_perts job.
-_PERT_METHODS = (
-    "abiget_irred_ddeperts",
-    "abiget_irred_dteperts",
-    "abiget_irred_phperts",
-    "abiget_ibz",
-)
+# arguments (see pert_call_key in atomate2.utils.testing.abinit, which also
+# defines the reference file format shared with the abinit CLI commands).
+# The recorder resets each perts.json.gz file on its first record-mode call
+# per fixture, so re-recording a test replaces rather than appends.
+_PERT_RECORDER = PertRecorder()
 _MRGDDB_FILES = "mrgddb.in"
 _FAKE_RUN_MRGDDB_KWARGS = {}
 _MRGDV_FILES = "mrgdv.in"
@@ -222,7 +222,7 @@ def mock_abinit(
 
         record_perts = abinit_record_perts
         if record_perts:
-            _PERT_RECORDED_FILES.clear()
+            _PERT_RECORDER.reset()
 
         def _make_fake_pert_method(method_name, orig_method, record=False):
             def _fake(self, *args, workdir=None, **kwargs):
@@ -253,39 +253,17 @@ def mock_abinit(
                 # Canonical key of the call arguments that distinguish the
                 # call. workdir and manager never take part in the key as
                 # they only define where the real abinit task runs.
-                key = _pert_call_key(method_name, args, kwargs)
+                key = pert_call_key(method_name, args, kwargs)
                 if record:
                     result = orig_method(self, *args, workdir=workdir, **kwargs)
-                    result_data = _dump_pert_result(method_name, result)
-                    if str(ref_file) in _PERT_RECORDED_FILES and ref_file.exists():
-                        data = _load_perts_gz(ref_file)
-                    else:
-                        # First record call for this fixture: reset the file.
-                        data = {}
-                    if key in data.get(method_name, {}):
-                        # Duplicate call with the same distinguishing arguments:
-                        # legitimate only if the abipy method is deterministic.
-                        # Identical results are recorded once, different results
-                        # are a loud error instead of a silent overwrite.
-                        if not _pert_results_equal(
-                            method_name, result_data, data[method_name][key]
-                        ):
-                            raise ValueError(
-                                f"Inconsistent duplicate call to {method_name} "
-                                f"with key {key!r}: recorded "
-                                f"{data[method_name][key]} differs from the "
-                                f"newly computed {result_data}."
-                            )
-                        logger.info(
-                            f"duplicate call to {method_name} with key {key}, "
-                            "identical result - recorded once"
-                        )
-                        return result
-                    data.setdefault(method_name, {})[key] = result_data
-                    _dump_perts_gz(data, ref_file)
-                    _PERT_RECORDED_FILES.add(str(ref_file))
+                    _PERT_RECORDER.record(
+                        ref_file,
+                        method_name,
+                        key,
+                        dump_pert_result(method_name, result),
+                    )
                     return result
-                data = _load_perts_gz(ref_file)
+                data = load_perts_gz(ref_file)
                 if key not in data.get(method_name, {}):
                     raise ValueError(
                         f"No recorded result for {method_name} with key "
@@ -293,11 +271,11 @@ def mock_abinit(
                         f"{sorted(data.get(method_name, {}))}. "
                         "Re-record with --abinit-record-perts."
                     )
-                return _load_pert_result(method_name, data[method_name][key])
+                return load_pert_result(method_name, data[method_name][key])
 
             return _fake
 
-        for method_name in _PERT_METHODS:
+        for method_name in PERT_METHOD_NAMES:
             monkeypatch.setattr(
                 AbinitInput,
                 method_name,
@@ -319,152 +297,7 @@ def mock_abinit(
     monkeypatch.undo()
     _REF_PATHS.clear()
     _FAKE_RUN_ABINIT_KWARGS.clear()
-    _PERT_RECORDED_FILES.clear()
-
-
-def _dump_perts_gz(data: dict, filename: Path) -> None:
-    """
-    Write pert ref data as gzip JSON with a zeroed header (deterministic bytes).
-
-    Python's gzip writer embeds the current mtime in the gzip header, so two
-    record runs with identical data would otherwise produce different bytes.
-    Together with sort_keys=True this makes two record runs byte-identical.
-    """
-    payload = json.dumps(data, sort_keys=True).encode()
-    filename.parent.mkdir(parents=True, exist_ok=True)
-    filename.write_bytes(gzip.compress(payload, mtime=0))
-
-
-def _load_perts_gz(filename: Path) -> dict:
-    """
-    Read pert ref data written by _dump_perts_gz.
-    """
-    return json.loads(gzip.decompress(filename.read_bytes()))
-
-
-def _pert_canon(value):
-    """
-    Convert numpy values to plain Python objects with a version-stable repr.
-
-    Plain conversion is required so that reference keys are identical across
-    numpy versions (repr of numpy scalars changed with numpy 2.0).
-    """
-    if isinstance(value, np.ndarray):
-        return value.tolist()
-    if isinstance(value, np.generic):
-        return value.item()
-    return value
-
-
-def _pert_call_key(method_name: str, args: tuple, kwargs: dict) -> str:
-    """
-    Get the canonical key of the call arguments that distinguish a perturbation
-    call. workdir and manager never take part in the key, as they only define
-    where the real abinit task runs.
-
-    The per-method keys are:
-    - "abiget_irred_phperts": the q-point, e.g. "(0.5, 0.0, 0.0)"
-    - "abiget_ibz": comma-joined "name=value" pairs of the call kwargs,
-      sorted by name, e.g. "kptopt=3, shiftk=(0, 0, 0)"
-    - "abiget_irred_ddeperts" and "abiget_irred_dteperts": "default" (called
-      once, without distinguishing arguments)
-
-    Parameters
-    ----------
-    method_name
-        Name of the abipy AbinitInput method being called.
-    args
-        Positional call arguments (qpt can be passed positionally to
-        abiget_irred_phperts).
-    kwargs
-        Keyword call arguments.
-    """
-    if method_name == "abiget_irred_phperts":
-        qpt = kwargs.get("qpt", args[0] if args else None)
-        if qpt is None:
-            raise ValueError(
-                "The q-point argument is required to compute the reference "
-                f"key of {method_name}."
-            )
-        return str(tuple(_pert_canon(q) for q in qpt))
-    if method_name == "abiget_ibz":
-        return ", ".join(
-            f"{k}={_pert_canon(kwargs[k])}"
-            for k in sorted(kwargs)
-            if k not in ("workdir", "manager")
-        )
-    return "default"
-
-
-def _pert_results_equal(method_name: str, a, b) -> bool:
-    """
-    Compare two canonically serialized perturbation results for equality.
-
-    Parameters
-    ----------
-    method_name
-        Name of the abipy AbinitInput method that produced the results.
-    a, b
-        Serialized results in the reference file format.
-    """
-    if method_name == "abiget_ibz":
-        return np.array_equal(
-            np.asarray(a["points"]), np.asarray(b["points"])
-        ) and np.array_equal(np.asarray(a["weights"]), np.asarray(b["weights"]))
-    import json
-
-    return json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
-
-
-def _dump_pert_result(method_name: str, result) -> object:
-    """
-    Convert the return value of an abipy perturbation helper to JSON-safe data.
-
-    The load counterpart _load_pert_result mirrors these transformations.
-
-    Parameters
-    ----------
-    method_name
-        Name of the abipy AbinitInput method that produced the result.
-    result
-        Return value of the abipy method.
-    """
-    if method_name == "abiget_ibz":
-        # abiget_ibz returns a namedtuple of numpy arrays: store the arrays as
-        # plain lists, the load path rebuilds the namedtuple from them.
-        return {
-            "points": np.asarray(result.points).tolist(),
-            "weights": np.asarray(result.weights).tolist(),
-        }
-    # The abiget_irred_*perts methods return lists of monty AttrDict (a dict
-    # subclass): store them as plain dicts, the load path restores them as
-    # AttrDicts so that attribute access (e.g. pert.i1pert) keeps working.
-    return [dict(pert) for pert in result]
-
-
-def _load_pert_result(method_name: str, data):
-    """
-    Rebuild the return value of an abipy perturbation helper from reference data.
-
-    Parameters
-    ----------
-    method_name
-        Name of the abipy AbinitInput method that produced the result.
-    data
-        JSON-safe data produced by _dump_pert_result.
-    """
-    if method_name == "abiget_ibz":
-        from typing import NamedTuple
-
-        class Ibz(NamedTuple):
-            points: np.ndarray
-            weights: np.ndarray
-
-        return Ibz(points=np.array(data["points"]), weights=np.array(data["weights"]))
-
-    from monty.collections import AttrDict
-
-    return [AttrDict(**pert) for pert in data]
+    _PERT_RECORDER.reset()
 
 
 def fake_run_abinit(ref_path: str | Path) -> None:
