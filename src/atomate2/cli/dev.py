@@ -478,35 +478,36 @@ def abinit_test_data(test_name: str, test_data_dir: str | None, force: bool) -> 
             )
         if include_fake_files:
             for fn in include_fake_files:
-                # let's be sure to catch outputs of perturbation tasks
-                fname = check_file_ext_pert(filename=fn, dirname=src_dirdata)
-                src_fpath = src_dirdata / fname
-                dest_fpath = dest_dirdata / fname
+                # let's be sure to catch outputs of perturbation tasks:
+                # several files may match a single generic name (e.g. in_1WF
+                # for all the in_1WFx linked wavefunctions), so stub them all.
+                filenames = check_file_ext_pert(filename=fn, dirname=src_dirdata)
                 # let's remove out_DDB that were copied but could be a fake file
                 remove_copied_out_ddb(
                     filename=fn, dirname=dest_dirdata, src_dirname=src_dirdata
                 )
-                if dest_fpath.exists():
-                    return
-                if not src_fpath.exists():
-                    if allow_missing:
+                for fname in filenames:
+                    src_fpath = src_dirdata / fname
+                    dest_fpath = dest_dirdata / fname
+                    if dest_fpath.exists():
                         continue
-                    raise RuntimeError(f"File {src_fpath} does not exist")
-                if src_fpath.is_symlink():
-                    dest_fpath.write_text(f"SYMBOLIC_LINK TO {src_fpath.resolve()}")
-                elif src_fpath.is_file():
-                    dest_fpath.write_text("REGULAR_FILE")
-                else:
-                    raise RuntimeError(
-                        "File is not a symbolic link nor a regular file."
-                    )
+                    if not src_fpath.exists():
+                        if allow_missing:
+                            continue
+                        raise RuntimeError(f"File {src_fpath} does not exist")
+                    if src_fpath.is_symlink():
+                        dest_fpath.write_text(f"SYMBOLIC_LINK TO {src_fpath.resolve()}")
+                    elif src_fpath.is_file():
+                        dest_fpath.write_text("REGULAR_FILE")
+                    else:
+                        raise RuntimeError(
+                            "File is not a symbolic link nor a regular file."
+                        )
 
     # can return out_DENxxx from the filename out_DEN and idem for out_1WFxxx
-    def check_file_ext_pert(filename: str | Path, dirname: str | Path) -> str | Path:
-        for file in os.listdir(dirname):
-            if str(filename) in file:
-                return file
-        return filename
+    def check_file_ext_pert(filename: str | Path, dirname: str | Path) -> list[str]:
+        matches = [f for f in os.listdir(dirname) if str(filename) in f]
+        return matches or [str(filename)]
 
     # remove out_DDB from a given directory if the src out_DDB
     # was not the output of a mrgddb task

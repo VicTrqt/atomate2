@@ -300,6 +300,52 @@ def mock_abinit(
     _PERT_RECORDER.reset()
 
 
+def check_abinit_indata(ref_path: str | Path) -> None:
+    """Verify that the indata files linked by the input set writer match the
+    reference recording: same file names, same count.
+    """
+    from jobflow import CURRENT_JOB
+
+    def _indata_names(directory: Path) -> set[str]:
+        # A missing directory counts as the empty set: jobs with no inputs
+        # linked by the input set writer have no indata directory at all.
+        if not directory.is_dir():
+            return set()
+        return {
+            entry.name.removesuffix(".gz")
+            for entry in directory.iterdir()
+            if entry.is_file() or entry.is_symlink()
+        }
+
+    ref_path = Path(ref_path)
+    # Only names are compared: symlink targets are temp-dir specific.
+    ref_names = _indata_names(ref_path / "inputs" / "indata")
+    live_names = _indata_names(Path("indata"))
+
+    if live_names != ref_names:
+        in_ref_not_linked = sorted(ref_names - live_names)
+        linked_not_in_ref = sorted(live_names - ref_names)
+        msg = (
+            f"Job {CURRENT_JOB.job.name}: the indata files linked by the input "
+            f"set writer do not match the reference recording."
+        )
+        if in_ref_not_linked:
+            msg += (
+                f" Present in reference but not linked (wiring lost an input, "
+                f"or the reference is stale): {in_ref_not_linked}."
+            )
+        if linked_not_in_ref:
+            msg += (
+                f" Linked but absent from reference (new wiring, or an "
+                f"incomplete reference): {linked_not_in_ref}."
+            )
+        msg += (
+            " Regenerate the test data with `abinit-generate-reference` + "
+            "`abinit-test-data`."
+        )
+        raise AssertionError(msg)
+
+
 def fake_run_abinit(ref_path: str | Path) -> None:
     """
     Emulate running ABINIT.
@@ -314,6 +360,7 @@ def fake_run_abinit(ref_path: str | Path) -> None:
 
     ref_path = Path(ref_path)
 
+    check_abinit_indata(ref_path)
     copy_abinit_outputs(ref_path)
 
     # Pretend to run ABINIT by copying pre-generated outputs from reference directory
