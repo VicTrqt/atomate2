@@ -10,8 +10,10 @@ import click
 from monty.json import jsanitize
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
+    from abipy.abio.inputs import AbinitInput
     from jobflow import Maker
 
 
@@ -242,11 +244,25 @@ def abinit_generate_reference(structure_file: str, make_kwargs: dict) -> None:
 
     NB: note that all the files in the folder will be compressed, in light of a copy to
     the test folder, unless the --no-compress is selected.
+
+    NB: the run directory of a generate_perts job now contains a perts.json.gz
+    file with the recorded abipy perturbation results (see
+    atomate2.utils.testing.abinit). It is consumed by abinit-test-data, which
+    copies it into the generate_perts reference directory of the test data.
     """
+    from pathlib import Path
+
     from jobflow import JobStore, run_locally
     from maggma.stores.mongolike import MemoryStore
     from monty.serialization import dumpfn, loadfn
     from pymatgen.core.structure import Structure
+
+    from atomate2.utils.testing.abinit import (
+        PERT_METHOD_NAMES,
+        PertRecorder,
+        dump_pert_result,
+        pert_call_key,
+    )
 
     # get the structure
     if structure_file:
@@ -266,9 +282,51 @@ def abinit_generate_reference(structure_file: str, make_kwargs: dict) -> None:
     if make_kwargs:
         dumpfn({"make_kwargs": make_kwargs}, "make_info.json")
 
+    # Capture the abipy perturbation results of a generate_perts job during the
+    # run: the real abipy methods are called as usual (running real abinit), and
+    # their results are recorded to a perts.json.gz file in the run directory of
+    # the generate_perts job (jobflow cds into each job dir, so Path.cwd() is the
+    # job's run dir when the methods are called). If the flow contains no
+    # generate_perts job, the patched methods are never called and no file is
+    # written.
+    from abipy.abio.inputs import AbinitInput
+
+    orig_pert_methods = {
+        method_name: getattr(AbinitInput, method_name)
+        for method_name in PERT_METHOD_NAMES
+    }
+    pert_recorder = PertRecorder()
+
+    def _make_pert_capture(
+        method_name: str, orig_method: Callable[..., Any]
+    ) -> Callable[..., Any]:
+        def _capture(
+            self: AbinitInput,
+            *args: Any,
+            workdir: str | Path | None = None,
+            **kwargs: Any,
+        ) -> Any:
+            result = orig_method(self, *args, workdir=workdir, **kwargs)
+            pert_recorder.record(
+                Path.cwd() / "perts.json.gz",
+                method_name,
+                pert_call_key(method_name, args, kwargs),
+                dump_pert_result(method_name, result),
+            )
+            return result
+
+        return _capture
+
+    for method_name, orig_method in orig_pert_methods.items():
+        setattr(AbinitInput, method_name, _make_pert_capture(method_name, orig_method))
+
     # run the workflow using a custom store so that we can easily compile test data
     store = JobStore(MemoryStore(), additional_stores={"data": MemoryStore()})
-    run_locally(flow_or_job, store=store, create_folders=True)
+    try:
+        run_locally(flow_or_job, store=store, create_folders=True)
+    finally:
+        for method_name, orig_method in orig_pert_methods.items():
+            setattr(AbinitInput, method_name, orig_method)
 
     # dump all of the job outputs to the outputs.json file in the current directory
     outputs = list(store.query(load=True))
@@ -291,6 +349,7 @@ def abinit_test_data(test_name: str, test_data_dir: str | None, force: bool) -> 
     an outputs.json file and job folders in the current directory. Please refer to
     the atomate2 documentation on writing unit tests for more information.
     """
+    import shutil
     import sys
     import warnings
     from pathlib import Path
@@ -357,8 +416,44 @@ def abinit_test_data(test_name: str, test_data_dir: str | None, force: bool) -> 
     if len(task_labels) != len(set(task_labels)):
         raise ValueError("Not all jobs have unique names")
 
+    outputs_by_uuid_index = {(o.uuid, o.index): o.output for o in outputs}
+
     original_mapping = {}
     mapping: dict[Any, Any] = {}
+
+    def _add_to_mapping(
+        job_name: str, index_job: str, job_index_dir: Path, orig_job_dir: Path | None
+    ) -> Path:
+        """Register a job reference directory in the ref_paths mapping."""
+        job_index_dir = job_index_dir.resolve()
+
+        job_index_dir_parts = job_index_dir.parts
+        indices = _find_sub_list(
+            (
+                "atomate2",
+                "tests",
+                "test_data",
+                "abinit",
+            ),
+            job_index_dir_parts,
+        )
+        if len(indices) != 1:
+            raise RuntimeError(
+                "Could not find job_test's "
+                "atomate2/tests/test_data/abinit-based root dir"
+            )
+        job_index_dir_for_mapping = Path(*job_index_dir_parts[indices[0][1] :])
+        if job_name not in mapping:
+            mapping[job_name] = {}
+        if index_job in mapping[job_name]:
+            raise RuntimeError(
+                f"Job index {index_job} for "
+                f"{job_name} Job is already present in the mapping"
+            )
+        mapping[job_name][index_job] = str(job_index_dir_for_mapping)
+        if orig_job_dir is not None:
+            original_mapping[str(job_index_dir)] = orig_job_dir
+        return job_index_dir
 
     def _fake_dirdata(
         src_dir: Path,
@@ -383,35 +478,36 @@ def abinit_test_data(test_name: str, test_data_dir: str | None, force: bool) -> 
             )
         if include_fake_files:
             for fn in include_fake_files:
-                # let's be sure to catch outputs of perturbation tasks
-                fname = check_file_ext_pert(filename=fn, dirname=src_dirdata)
-                src_fpath = src_dirdata / fname
-                dest_fpath = dest_dirdata / fname
+                # let's be sure to catch outputs of perturbation tasks:
+                # several files may match a single generic name (e.g. in_1WF
+                # for all the in_1WFx linked wavefunctions), so stub them all.
+                filenames = check_file_ext_pert(filename=fn, dirname=src_dirdata)
                 # let's remove out_DDB that were copied but could be a fake file
                 remove_copied_out_ddb(
                     filename=fn, dirname=dest_dirdata, src_dirname=src_dirdata
                 )
-                if dest_fpath.exists():
-                    return
-                if not src_fpath.exists():
-                    if allow_missing:
+                for fname in filenames:
+                    src_fpath = src_dirdata / fname
+                    dest_fpath = dest_dirdata / fname
+                    if dest_fpath.exists():
                         continue
-                    raise RuntimeError(f"File {src_fpath} does not exist")
-                if src_fpath.is_symlink():
-                    dest_fpath.write_text(f"SYMBOLIC_LINK TO {src_fpath.resolve()}")
-                elif src_fpath.is_file():
-                    dest_fpath.write_text("REGULAR_FILE")
-                else:
-                    raise RuntimeError(
-                        "File is not a symbolic link nor a regular file."
-                    )
+                    if not src_fpath.exists():
+                        if allow_missing:
+                            continue
+                        raise RuntimeError(f"File {src_fpath} does not exist")
+                    if src_fpath.is_symlink():
+                        dest_fpath.write_text(f"SYMBOLIC_LINK TO {src_fpath.resolve()}")
+                    elif src_fpath.is_file():
+                        dest_fpath.write_text("REGULAR_FILE")
+                    else:
+                        raise RuntimeError(
+                            "File is not a symbolic link nor a regular file."
+                        )
 
     # can return out_DENxxx from the filename out_DEN and idem for out_1WFxxx
-    def check_file_ext_pert(filename: str | Path, dirname: str | Path) -> str | Path:
-        for file in os.listdir(dirname):
-            if str(filename) in file:
-                return file
-        return filename
+    def check_file_ext_pert(filename: str | Path, dirname: str | Path) -> list[str]:
+        matches = [f for f in os.listdir(dirname) if str(filename) in f]
+        return matches or [str(filename)]
 
     # remove out_DDB from a given directory if the src out_DDB
     # was not the output of a mrgddb task
@@ -454,6 +550,38 @@ def abinit_test_data(test_name: str, test_data_dir: str | None, force: bool) -> 
             )
 
     for output in outputs:
+        if isinstance(output.output, dict) and set(output.output) >= {"perts", "dirs"}:
+            # generate_perts job: runs no abinit/mrgddb/anaddb binary, so it has no
+            # inputs/outputs reference. Its reference is perts.json.gz (the recorded
+            # abipy perturbation results), captured by abinit-generate-reference in
+            # the job's run dir and copied here. If the run dir has no perts.json.gz
+            # (e.g. the reference run predates the capture), the test data dir is
+            # left without it: the generated test must then be run once with
+            # --abinit-record-perts to create it.
+            # NB: the mapping index for generate_perts is the index at which the flow
+            # output is stored by jobflow's store_inputs mechanism (execution index
+            # + 1), not the execution index at which the perturbation helpers run.
+            # The conftest pert mock resolves the reference directory
+            # index-agnostically, so this is fine.
+            job_name = "generate_perts"
+            index_job = str(output.index)
+            job_dir = test_dir / job_name
+            _makedir(job_dir, force_overwrite=force)
+            job_index_dir = job_dir / index_job
+            _makedir(job_index_dir, force_overwrite=force)
+            _add_to_mapping(job_name, index_job, job_index_dir, None)
+            # The store-index entry of the generate_perts job holds the flow output
+            # ({"perts", "dirs"}); the entry with the same uuid at execution index 1
+            # holds {"dir_name": cwd}, i.e. the run dir of the generate_perts job.
+            run_dir_output = outputs_by_uuid_index.get((output.uuid, 1))
+            if isinstance(run_dir_output, dict) and "dir_name" in run_dir_output:
+                run_dir = Path(strip_hostname(run_dir_output["dir_name"]))
+                run_perts_file = run_dir / "perts.json.gz"
+                if run_perts_file.exists():
+                    # copy verbatim: the file is already deterministic gzip JSON
+                    shutil.copyfile(run_perts_file, job_index_dir / "perts.json.gz")
+            continue
+
         if (
             not isinstance(output.output, AbinitTaskDoc)
             and not isinstance(output.output, MrgddbTaskDoc)
@@ -473,33 +601,9 @@ def abinit_test_data(test_name: str, test_data_dir: str | None, force: bool) -> 
         job_index_dir = job_dir / index_job
         _makedir(job_index_dir, force_overwrite=force)
 
-        job_index_dir = job_index_dir.resolve()
-
-        job_index_dir_parts = job_index_dir.parts
-        indices = _find_sub_list(
-            (
-                "atomate2",
-                "tests",
-                "test_data",
-                "abinit",
-            ),
-            job_index_dir_parts,
+        job_index_dir = _add_to_mapping(
+            job_name, index_job, job_index_dir, orig_job_dir
         )
-        if len(indices) != 1:
-            raise RuntimeError(
-                "Could not find job_test's "
-                "atomate2/tests/test_data/abinit-based root dir"
-            )
-        job_index_dir_for_mapping = Path(*job_index_dir_parts[indices[0][1] :])
-        if job_name not in mapping:
-            mapping[job_name] = {}
-        if index_job in mapping[job_name]:
-            raise RuntimeError(
-                f"Job index {index_job} for "
-                f"{job_name} Job is already present in the mapping"
-            )
-        mapping[job_name][index_job] = str(job_index_dir_for_mapping)
-        original_mapping[str(job_index_dir)] = orig_job_dir
 
         # create input folder and copy across files
         input_dir = job_index_dir / "inputs"
@@ -632,6 +736,17 @@ class Test{maker_name}:
         assert output1.structure == structure
         assert output1.run_number == 1
     """
+
+    if "generate_perts" in mapping:
+        test_function_str += """
+This flow includes a generate_perts job. Its perturbation reference data
+(generate_perts/<index>/perts.json.gz) is copied automatically from the
+generate_perts run dir of the reference flow when present. If the file is
+missing, run the new test once with --abinit-record-perts (requires real abinit
+on PATH) to create it. The flag is also the fast way to refresh the perturbation
+reference alone, without re-running the whole reference flow, when only abipy
+or the atomate2 input generation changed.
+"""
 
     print(test_function_str)  # noqa: T201
 
